@@ -3329,6 +3329,38 @@ mod tests {
         }
     }
 
+    /// SECURITY: Hooks call `rtk rewrite -- "$CMD"` to prevent flag injection.
+    /// Without the `--` terminator, a command like "--help" or "-h" would be
+    /// interpreted by clap as a flag to the `rewrite` subcommand — clap would
+    /// print help text and exit 0, the hook would then feed that help text
+    /// back to the agent as the rewritten command, which is shell-executed.
+    /// See issue #1350. This test asserts that `--` causes hyphen-prefixed
+    /// inputs to be captured as positional args rather than triggering clap's
+    /// built-in help/version paths.
+    #[test]
+    fn test_rewrite_clap_double_dash_blocks_flag_injection() {
+        let injection_inputs = ["--help", "-h", "--version", "-V"];
+        for injected in injection_inputs {
+            let result = Cli::try_parse_from(["rtk", "rewrite", "--", injected]);
+            assert!(
+                result.is_ok(),
+                "`rtk rewrite -- {injected:?}` must parse without triggering clap"
+            );
+            if let Ok(cli) = result {
+                match cli.command {
+                    Commands::Rewrite { ref args } => {
+                        assert_eq!(
+                            args,
+                            &vec![injected.to_string()],
+                            "{injected:?} must be captured as a positional arg, not a flag"
+                        );
+                    }
+                    _ => panic!("expected Rewrite command"),
+                }
+            }
+        }
+    }
+
     #[test]
     fn test_merge_filters_with_no_args() {
         let filters = vec![];
