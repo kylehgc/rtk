@@ -2,7 +2,7 @@
 
 use crate::core::runner;
 use crate::core::stream::{BlockHandler, BlockStreamFilter};
-use crate::core::utils::{resolved_command, tool_exists, truncate};
+use crate::core::utils::{resolved_command, strip_ansi, tool_exists, truncate};
 use anyhow::Result;
 use lazy_static::lazy_static;
 use regex::Regex;
@@ -11,6 +11,29 @@ use std::collections::{HashMap, HashSet};
 lazy_static! {
     static ref TSC_ERROR: Regex =
         Regex::new(r"^(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+(TS\d+):\s+(.+)$").unwrap();
+    static ref TSC_PRETTY_ERROR: Regex =
+        Regex::new(r"^(.+?):(\d+):(\d+)\s+-\s+(error|warning)\s+(TS\d+):\s+(.+)$").unwrap();
+}
+
+struct TsDiagnostic {
+    file: String,
+    line: usize,
+    code: String,
+    message: String,
+}
+
+fn parse_tsc_error(line: &str) -> Option<TsDiagnostic> {
+    let clean = strip_ansi(line);
+    let caps = TSC_ERROR
+        .captures(&clean)
+        .or_else(|| TSC_PRETTY_ERROR.captures(&clean))?;
+
+    Some(TsDiagnostic {
+        file: caps[1].to_string(),
+        line: caps[2].parse().unwrap_or(0),
+        code: caps[5].to_string(),
+        message: caps[6].to_string(),
+    })
 }
 
 pub fn run(args: &[String], verbose: u8) -> Result<i32> {
@@ -60,14 +83,14 @@ impl TscHandler {
 
 impl BlockHandler for TscHandler {
     fn should_skip(&mut self, line: &str) -> bool {
-        line.starts_with("Found ")
+        strip_ansi(line).starts_with("Found ")
     }
 
     fn is_block_start(&mut self, line: &str) -> bool {
-        if let Some(caps) = TSC_ERROR.captures(line) {
+        if let Some(diag) = parse_tsc_error(line) {
             self.error_count += 1;
-            self.files.insert(caps[1].to_string());
-            *self.code_counts.entry(caps[5].to_string()).or_insert(0) += 1;
+            self.files.insert(diag.file);
+            *self.code_counts.entry(diag.code).or_insert(0) += 1;
             true
         } else {
             false
@@ -78,8 +101,22 @@ impl BlockHandler for TscHandler {
         line.starts_with("  ") || line.starts_with('\t')
     }
 
-    fn format_summary(&self, _exit_code: i32, _raw: &str) -> Option<String> {
+    fn format_summary(&self, exit_code: i32, raw: &str) -> Option<String> {
         if self.error_count == 0 {
+            if exit_code != 0 {
+                let clean = strip_ansi(raw);
+                let clean = clean.trim();
+                if clean.is_empty() {
+                    return Some(format!(
+                        "TypeScript: compiler exited with code {}, but RTK parsed no diagnostics\n",
+                        exit_code
+                    ));
+                }
+                return Some(format!(
+                    "TypeScript: compiler exited with code {}, but RTK parsed no diagnostics\n{}\n",
+                    exit_code, clean
+                ));
+            }
             return Some("TypeScript: No errors found\n".to_string());
         }
 
@@ -114,17 +151,18 @@ pub(crate) fn filter_tsc_output(output: &str) -> String {
     }
 
     let mut errors: Vec<TsError> = Vec::new();
-    let lines: Vec<&str> = output.lines().collect();
+    let clean_output = strip_ansi(output);
+    let lines: Vec<&str> = clean_output.lines().collect();
     let mut i = 0;
 
     while i < lines.len() {
         let line = lines[i];
-        if let Some(caps) = TSC_ERROR.captures(line) {
+        if let Some(diag) = parse_tsc_error(line) {
             let mut err = TsError {
-                file: caps[1].to_string(),
-                line: caps[2].parse().unwrap_or(0),
-                code: caps[5].to_string(),
-                message: caps[6].to_string(),
+                file: diag.file,
+                line: diag.line,
+                code: diag.code,
+                message: diag.message,
                 context_lines: Vec::new(),
             };
 
@@ -134,7 +172,7 @@ pub(crate) fn filter_tsc_output(output: &str) -> String {
                 let next = lines[i];
                 if !next.is_empty()
                     && (next.starts_with("  ") || next.starts_with('\t'))
-                    && !TSC_ERROR.is_match(next)
+                    && parse_tsc_error(next).is_none()
                 {
                     err.context_lines.push(next.trim().to_string());
                     i += 1;
@@ -150,7 +188,7 @@ pub(crate) fn filter_tsc_output(output: &str) -> String {
     }
 
     if errors.is_empty() {
-        if output.contains("Found 0 errors") {
+        if clean_output.contains("Found 0 errors") {
             return "TypeScript: No errors found".to_string();
         }
         return "TypeScript compilation completed".to_string();
@@ -236,6 +274,20 @@ Found 4 errors in 2 files.
     }
 
     #[test]
+    fn test_filter_tsc_output_pretty_ansi_error() {
+        let output = "\
+\x1b[96msrc/app.ts\x1b[0m:\x1b[93m1\x1b[0m:\x1b[93m7\x1b[0m - \x1b[91merror\x1b[0m\x1b[90m TS2322: \x1b[0mType 'string' is not assignable to type 'number'.
+  const x: number = \"string\";
+";
+        let result = filter_tsc_output(output);
+        assert!(result.contains("TypeScript: 1 errors in 1 files"));
+        assert!(result.contains("src/app.ts (1 errors)"));
+        assert!(result.contains("TS2322"));
+        assert!(result.contains("Type 'string' is not assignable to type 'number'"));
+        assert!(!result.contains("\x1b["));
+    }
+
+    #[test]
     fn test_every_error_message_shown() {
         let output = "\
 src/api.ts(10,5): error TS2322: Type 'string' is not assignable to type 'number'.
@@ -293,6 +345,13 @@ src/app.tsx(20,5): error TS2345: Argument of type 'number' is not assignable to 
         assert!(result.contains("No errors found"));
     }
 
+    #[test]
+    fn test_filter_no_errors_with_ansi() {
+        let output = "\x1b[32mFound 0 errors.\x1b[0m Watching for file changes.";
+        let result = filter_tsc_output(output);
+        assert!(result.contains("No errors found"));
+    }
+
     // --- Streaming handler tests ---
 
     use crate::core::stream::tests::run_block_filter;
@@ -312,6 +371,44 @@ Found 3 errors in 2 files.
         assert!(result.contains("TS2345"), "got: {}", result);
         assert!(result.contains("3 errors in 2 files"), "got: {}", result);
         assert!(!result.contains("Found 3"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_tsc_stream_pretty_ansi_errors() {
+        let input = "\
+\x1b[96msrc/app.ts\x1b[0m:\x1b[93m1\x1b[0m:\x1b[93m7\x1b[0m - \x1b[91merror\x1b[0m\x1b[90m TS2322: \x1b[0mType 'string' is not assignable to type 'number'.
+  const x: number = \"string\";
+\x1b[31mFound 1 error in src/app.ts:1\x1b[0m
+";
+        let mut f = BlockStreamFilter::new(TscHandler::new());
+        let result = run_block_filter(&mut f, input, 2);
+        assert!(result.contains("TS2322"), "got: {}", result);
+        assert!(
+            result.contains("Type 'string' is not assignable to type 'number'"),
+            "got: {}",
+            result
+        );
+        assert!(result.contains("1 errors in 1 files"), "got: {}", result);
+        assert!(!result.contains("No errors found"), "got: {}", result);
+        assert!(!result.contains("Found 1 error"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_tsc_stream_failed_unparsed_output_not_success() {
+        let input = "\
+\x1b[31mThis is not the tsc command you are looking for\x1b[0m
+Use npm install typescript before using npx
+";
+        let mut f = BlockStreamFilter::new(TscHandler::new());
+        let result = run_block_filter(&mut f, input, 1);
+        assert!(result.contains("compiler exited with code 1"), "got: {}", result);
+        assert!(
+            result.contains("This is not the tsc command you are looking for"),
+            "got: {}",
+            result
+        );
+        assert!(!result.contains("No errors found"), "got: {}", result);
+        assert!(!result.contains("\x1b["), "got: {}", result);
     }
 
     #[test]
