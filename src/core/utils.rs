@@ -483,7 +483,9 @@ pub fn decode_process_output(bytes: &[u8]) -> String {
 fn windows_console_output_cp() -> u32 {
     #[allow(unsafe_code)]
     // nosemgrep: unsafe-block — read-only Win32 API, no memory or thread safety risk
-    unsafe { windows_sys::Win32::System::Console::GetConsoleOutputCP() }
+    unsafe {
+        windows_sys::Win32::System::Console::GetConsoleOutputCP()
+    }
 }
 
 #[cfg(windows)]
