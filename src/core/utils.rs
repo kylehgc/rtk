@@ -457,6 +457,66 @@ pub fn human_bytes(bytes: u64) -> String {
     }
 }
 
+/// Decode child process output bytes, respecting the Windows console code page.
+///
+/// On all platforms, tries UTF-8 first. On Windows, falls back to the console's
+/// output code page (e.g., GBK for Chinese locale) via `encoding_rs`. On
+/// non-Windows or unknown code pages, falls back to lossy UTF-8.
+pub fn decode_process_output(bytes: &[u8]) -> String {
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        return s.to_owned();
+    }
+
+    #[cfg(windows)]
+    {
+        let cp = windows_console_output_cp();
+        if let Some(encoding) = codepage_to_encoding(cp) {
+            let (cow, _, _) = encoding.decode(bytes);
+            return cow.into_owned();
+        }
+    }
+
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+#[cfg(windows)]
+fn windows_console_output_cp() -> u32 {
+    #[allow(unsafe_code)]
+    unsafe {
+        extern "system" {
+            fn GetConsoleOutputCP() -> u32;
+        }
+        GetConsoleOutputCP()
+    }
+}
+
+#[cfg(windows)]
+fn codepage_to_encoding(cp: u32) -> Option<&'static encoding_rs::Encoding> {
+    let label = match cp {
+        936 | 54936 => "gbk",
+        950 => "big5",
+        932 => "shift_jis",
+        949 => "euc-kr",
+        874 => "windows-874",
+        1250 => "windows-1250",
+        1251 => "windows-1251",
+        1252 => "windows-1252",
+        1253 => "windows-1253",
+        1254 => "windows-1254",
+        1255 => "windows-1255",
+        1256 => "windows-1256",
+        1257 => "windows-1257",
+        1258 => "windows-1258",
+        28591 => "iso-8859-1",
+        28592 => "iso-8859-2",
+        20866 => "koi8-r",
+        21866 => "koi8-u",
+        65001 => return None,
+        _ => return None,
+    };
+    encoding_rs::Encoding::for_label(label.as_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -951,5 +1011,57 @@ mod tests {
     fn test_count_tokens_multiple_spaces() {
         assert_eq!(count_tokens("hello    world"), 2);
         assert_eq!(count_tokens("  hello   world  "), 2);
+    }
+
+    #[test]
+    fn test_decode_process_output_valid_utf8() {
+        assert_eq!(decode_process_output(b"hello world"), "hello world");
+    }
+
+    #[test]
+    fn test_decode_process_output_chinese_utf8() {
+        let input = "测试中文".as_bytes();
+        assert_eq!(decode_process_output(input), "测试中文");
+    }
+
+    #[test]
+    fn test_decode_process_output_empty() {
+        assert_eq!(decode_process_output(b""), "");
+    }
+
+    #[test]
+    fn test_decode_process_output_invalid_utf8_no_panic() {
+        let bytes: &[u8] = &[0xFF, 0xFE, 0x41, 0x42];
+        let result = decode_process_output(bytes);
+        assert!(!result.is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_decode_process_output_gbk() {
+        // "测试" in GBK encoding
+        let gbk_bytes: &[u8] = &[0xB2, 0xE2, 0xCA, 0xD4];
+        let result = decode_process_output(gbk_bytes);
+        assert_eq!(result, "测试");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_codepage_to_encoding_known() {
+        assert!(codepage_to_encoding(936).is_some());
+        assert!(codepage_to_encoding(932).is_some());
+        assert!(codepage_to_encoding(949).is_some());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_codepage_to_encoding_utf8_returns_none() {
+        assert!(codepage_to_encoding(65001).is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_codepage_to_encoding_unknown_returns_none() {
+        assert!(codepage_to_encoding(99999).is_none());
     }
 }
