@@ -482,12 +482,8 @@ pub fn decode_process_output(bytes: &[u8]) -> String {
 #[cfg(windows)]
 fn windows_console_output_cp() -> u32 {
     #[allow(unsafe_code)]
-    unsafe {
-        extern "system" {
-            fn GetConsoleOutputCP() -> u32;
-        }
-        GetConsoleOutputCP()
-    }
+    // nosemgrep: unsafe-block — read-only Win32 API, no memory or thread safety risk
+    unsafe { windows_sys::Win32::System::Console::GetConsoleOutputCP() }
 }
 
 #[cfg(windows)]
@@ -1039,10 +1035,12 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn test_decode_process_output_gbk() {
-        // "测试" in GBK encoding
+        // Test the encoding path directly: codepage 936 (GBK) should decode
+        // GBK bytes correctly regardless of the CI runner's actual code page.
         let gbk_bytes: &[u8] = &[0xB2, 0xE2, 0xCA, 0xD4];
-        let result = decode_process_output(gbk_bytes);
-        assert_eq!(result, "测试");
+        let encoding = codepage_to_encoding(936).expect("GBK encoding should be known");
+        let (decoded, _, _) = encoding.decode(gbk_bytes);
+        assert_eq!(decoded, "测试");
     }
 
     #[cfg(windows)]
