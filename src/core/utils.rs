@@ -491,7 +491,8 @@ fn windows_console_output_cp() -> u32 {
 #[cfg(windows)]
 fn codepage_to_encoding(cp: u32) -> Option<&'static encoding_rs::Encoding> {
     let label = match cp {
-        936 | 54936 => "gbk",
+        936 => "gbk",
+        54936 => "gb18030",
         950 => "big5",
         932 => "shift_jis",
         949 => "euc-kr",
@@ -1051,6 +1052,14 @@ mod tests {
         assert!(codepage_to_encoding(936).is_some());
         assert!(codepage_to_encoding(932).is_some());
         assert!(codepage_to_encoding(949).is_some());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_codepage_54936_maps_to_gb18030_not_gbk() {
+        // CP 54936 is GB18030; decoding its 4-byte sequences as GBK mangles them.
+        assert_eq!(codepage_to_encoding(54936), Some(encoding_rs::GB18030));
+        assert_eq!(codepage_to_encoding(936), Some(encoding_rs::GBK));
     }
 
     #[cfg(windows)]
