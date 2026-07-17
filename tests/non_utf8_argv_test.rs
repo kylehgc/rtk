@@ -28,9 +28,9 @@ fn rtk(args: &[OsString]) -> std::process::Output {
 
 #[test]
 fn non_utf8_pattern_does_not_abort() {
-    let d = tempfile::tempdir().unwrap();
+    let d = tempfile::tempdir().expect("create tempdir");
     let f = d.path().join("mojibake.txt");
-    std::fs::write(&f, MATCHING_LINE).unwrap();
+    std::fs::write(&f, MATCHING_LINE).expect("write mojibake fixture");
 
     let out = rtk(&[
         os(b"grep"),
@@ -57,9 +57,9 @@ fn non_utf8_pattern_does_not_abort() {
 
 #[test]
 fn non_utf8_pattern_forwards_original_bytes() {
-    let d = tempfile::tempdir().unwrap();
+    let d = tempfile::tempdir().expect("create tempdir");
     let f = d.path().join("mojibake.txt");
-    std::fs::write(&f, MATCHING_LINE).unwrap();
+    std::fs::write(&f, MATCHING_LINE).expect("write mojibake fixture");
 
     let rtk_out = rtk(&[
         os(b"grep"),
