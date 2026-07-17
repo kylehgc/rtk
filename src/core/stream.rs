@@ -21,7 +21,11 @@ fn read_lines_lossy(reader: impl Read) -> impl Iterator<Item = String> {
     std::iter::from_fn(move || {
         let mut buf = Vec::new();
         match reader.read_until(b'\n', &mut buf) {
-            Ok(0) | Err(_) => None,
+            Ok(0) => None,
+            Err(e) => {
+                eprintln!("rtk: stream read error: {}", e);
+                None
+            }
             Ok(_) => {
                 if buf.last() == Some(&b'\n') {
                     buf.pop();
