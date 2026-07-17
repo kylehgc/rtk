@@ -14,14 +14,14 @@ const DIAGNOSTIC: &str = "shim-diagnostic: dependency is missing";
 /// stdout, nonzero exit. `rtk ruff` filters stdout only, which is the path under
 /// test; `resolved_command` resolves via PATH, so the shim takes precedence.
 fn shim(exit_code: i32) -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("create shim tempdir");
     let bin = dir.path().join("ruff");
     fs::write(
         &bin,
         format!("#!/bin/sh\necho '{DIAGNOSTIC}' >&2\nexit {exit_code}\n"),
     )
-    .unwrap();
-    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    .expect("write shim script");
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).expect("chmod shim");
     dir
 }
 
@@ -42,7 +42,7 @@ fn rtk_ruff(shim_dir: &tempfile::TempDir, db: &tempfile::TempDir) -> std::proces
 
 #[test]
 fn failing_tool_stderr_reaches_the_user() {
-    let db = tempfile::tempdir().unwrap();
+    let db = tempfile::tempdir().expect("create db tempdir");
     let out = rtk_ruff(&shim(1), &db);
 
     assert_eq!(out.status.code(), Some(1), "exit code must propagate");
@@ -58,7 +58,7 @@ fn failing_tool_stderr_reaches_the_user() {
 fn successful_tool_stderr_stays_suppressed() {
     // On success stderr is the incidental noise RTK exists to compress away, and
     // the filtered stdout already carries the result.
-    let db = tempfile::tempdir().unwrap();
+    let db = tempfile::tempdir().expect("create db tempdir");
     let out = rtk_ruff(&shim(0), &db);
 
     assert_eq!(out.status.code(), Some(0));
