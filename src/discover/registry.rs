@@ -605,14 +605,15 @@ pub fn rewrite_command(
 const PIPE_INCOMPATIBLE: &[&str] = &["find", "fd", "grep", "rg", "ls", "head", "tail", "cat"];
 
 /// True when `seg`'s command is one whose filtered output must not feed a pipe.
-/// Leading `VAR=value` assignments are skipped, matching `rewrite_segment`'s
-/// own env-prefix handling.
+/// Mirrors `rewrite_segment`'s own normalization: leading `sudo`/`env`/`VAR=value`
+/// prefixes are stripped via the same `ENV_PREFIX` regex, and absolute binary
+/// paths reduce to their basename — otherwise a segment the rewrite path would
+/// match (e.g. `sudo grep … | wc -l`, `/usr/bin/grep … | wc -l`) escapes the skip.
 fn is_pipe_incompatible(seg: &str) -> bool {
-    let first = seg
-        .split_whitespace()
-        .find(|word| !word.contains('='))
-        .unwrap_or("");
-    PIPE_INCOMPATIBLE.contains(&first)
+    let (_, rest) = strip_disabled_prefix(seg);
+    let first = rest.split_whitespace().next().unwrap_or("");
+    let basename = first.rsplit('/').next().unwrap_or(first);
+    PIPE_INCOMPATIBLE.contains(&basename)
 }
 
 /// Rewrite a compound command (with `&&`, `||`, `;`, `|`) by rewriting each segment.
@@ -1777,6 +1778,35 @@ mod tests {
         // command (rewrite_segment strips env prefixes the same way).
         assert_eq!(
             rewrite_command_no_prefixes("LC_ALL=C grep -n match f.txt | sort", &[]),
+            None
+        );
+    }
+
+    #[test]
+    fn test_rewrite_sudo_env_prefix_pipe_skipped() {
+        // sudo/env and quoted env values are stripped by the same ENV_PREFIX
+        // regex the rewrite path uses — they must not hide a pipe-incompatible
+        // command (`sudo grep … | wc -l` was still rewritten before).
+        assert_eq!(
+            rewrite_command_no_prefixes("sudo grep -n match f.txt | wc -l", &[]),
+            None
+        );
+        assert_eq!(
+            rewrite_command_no_prefixes("env grep -n match f.txt | sort", &[]),
+            None
+        );
+        assert_eq!(
+            rewrite_command_no_prefixes("LC_ALL=\"en US\" grep -n match f.txt | sort", &[]),
+            None
+        );
+    }
+
+    #[test]
+    fn test_rewrite_absolute_path_pipe_skipped() {
+        // rewrite_segment normalizes `/usr/bin/grep` to `grep` (#485), so the
+        // pipe skip must apply the same basename normalization.
+        assert_eq!(
+            rewrite_command_no_prefixes("/usr/bin/grep -n match f.txt | wc -l", &[]),
             None
         );
     }
