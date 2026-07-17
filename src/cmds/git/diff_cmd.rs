@@ -35,12 +35,27 @@ pub fn run(file1: &Path, file2: &Path, verbose: u8) -> Result<i32> {
 /// Renders the condensed file comparison and returns it with the
 /// diff-convention exit code (0 = identical, 1 = differences found).
 fn render_file_diff(file1: &Path, file2: &Path, content1: &str, content2: &str) -> (String, i32) {
+    // Byte equality is the only safe basis for claiming identity, and it must be
+    // checked before `lines()` touches the input. `str::lines()` strips a
+    // trailing `\r` and treats the final newline as optional, so a CRLF-vs-LF or
+    // missing-trailing-newline difference collapses to identical line vectors.
+    // Reporting "identical" with exit 0 for files that differ silently passes
+    // any verification gate built on `diff`.
+    if content1 == content2 {
+        return ("[ok] Files are identical\n".to_string(), 0);
+    }
+
     let lines1: Vec<&str> = content1.lines().collect();
     let lines2: Vec<&str> = content2.lines().collect();
     let diff = compute_diff(&lines1, &lines2);
 
     if diff.changes.is_empty() {
-        return ("[ok] Files are identical\n".to_string(), 0);
+        // Bytes differ, lines don't: the difference is exactly what `lines()`
+        // normalizes away. Name it rather than rendering an empty change list.
+        return (
+            describe_invisible_difference(file1, file2, content1, content2),
+            1,
+        );
     }
 
     let mut rtk = String::new();
@@ -51,6 +66,59 @@ fn render_file_diff(file1: &Path, file2: &Path, content1: &str, content2: &str) 
     ));
     rtk.push_str(&format_diff_changes(&diff));
     (rtk, 1)
+}
+
+/// Describe a difference that a line-based diff cannot see.
+///
+/// Reached only when the bytes differ but `lines()` yields identical vectors,
+/// which narrows the cause to the two things `lines()` normalizes: a `\r`
+/// before the newline, and the presence of the final newline. Rendering the
+/// usual `~ 12 foo → foo` change list here would show two visually identical
+/// strings, so state the cause instead.
+fn describe_invisible_difference(
+    file1: &Path,
+    file2: &Path,
+    content1: &str,
+    content2: &str,
+) -> String {
+    let crlf1 = content1.matches("\r\n").count();
+    let crlf2 = content2.matches("\r\n").count();
+    let nl1 = content1.ends_with('\n');
+    let nl2 = content2.ends_with('\n');
+
+    let mut notes: Vec<String> = Vec::new();
+    if crlf1 != crlf2 {
+        notes.push(format!(
+            "line endings: {} CRLF vs {} CRLF",
+            crlf1, crlf2
+        ));
+    }
+    if nl1 != nl2 {
+        notes.push(format!(
+            "trailing newline: {} vs {}",
+            if nl1 { "present" } else { "absent" },
+            if nl2 { "present" } else { "absent" }
+        ));
+    }
+    if notes.is_empty() {
+        // Defensive: no known `lines()` normalization explains it. Say so
+        // rather than implying the files match.
+        notes.push(format!(
+            "{} vs {} bytes, invisible to a line-based diff",
+            content1.len(),
+            content2.len()
+        ));
+    }
+
+    // Deliberately avoids the word "identical". That string is the signal for
+    // the true-identity case, and a reader (or grep) scanning for it must not
+    // match a report about files that differ.
+    format!(
+        "{} → {}\n   differs, text matches ({})\n",
+        file1.display(),
+        file2.display(),
+        notes.join("; ")
+    )
 }
 
 /// Run diff from stdin (piped command output)
@@ -330,6 +398,79 @@ mod tests {
         assert!(out.contains("a: 1"));
         assert!(out.contains("a: 2"));
         assert_eq!(code, 1, "differing files must exit 1 (diff convention)");
+    }
+
+    #[test]
+    fn test_render_crlf_difference_is_not_identical() {
+        // `str::lines()` strips a trailing `\r`, so a CRLF-vs-LF file pair used
+        // to collapse to identical line vectors and report "[ok] Files are
+        // identical" with exit 0. `cmp` says these differ at byte 6.
+        let (out, code) = render_file_diff(
+            Path::new("a.txt"),
+            Path::new("b.txt"),
+            "keep1\nkeep2\nkeep3\n",
+            "keep1\r\nkeep2\r\nkeep3\n",
+        );
+        assert!(
+            !out.contains("identical"),
+            "CRLF-vs-LF reported as identical:\n{}",
+            out
+        );
+        assert_eq!(code, 1, "differing files must exit 1");
+        assert!(out.contains("0 CRLF vs 2 CRLF"), "got: {}", out);
+    }
+
+    #[test]
+    fn test_render_trailing_newline_difference_is_not_identical() {
+        // The other thing `lines()` normalizes: the final newline is optional.
+        let (out, code) = render_file_diff(
+            Path::new("a.txt"),
+            Path::new("b.txt"),
+            "keep1\nkeep2\n",
+            "keep1\nkeep2",
+        );
+        assert!(
+            !out.contains("identical"),
+            "trailing-newline diff reported as identical:\n{}",
+            out
+        );
+        assert_eq!(code, 1);
+        assert!(out.contains("trailing newline: present vs absent"), "got: {}", out);
+    }
+
+    #[test]
+    fn test_render_byte_identical_is_identical() {
+        // The guard must not flip the true-identity case to a false positive.
+        let (out, code) = render_file_diff(
+            Path::new("a.txt"),
+            Path::new("b.txt"),
+            "keep1\nkeep2\n",
+            "keep1\nkeep2\n",
+        );
+        assert!(out.contains("[ok] Files are identical"));
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn test_render_partial_crlf_matches_reported_repro() {
+        // The shape actually observed: a 200-line file where a Windows editor
+        // touched 24 lines. Text identical, bytes differ, `cmp` exits 1.
+        let plain: String = (0..200).map(|i| format!("line {} content here\n", i)).collect();
+        let mixed: String = (0..200)
+            .map(|i| {
+                if (50..74).contains(&i) {
+                    format!("line {} content here\r\n", i)
+                } else {
+                    format!("line {} content here\n", i)
+                }
+            })
+            .collect();
+        assert_ne!(plain, mixed, "fixture must actually differ");
+
+        let (out, code) = render_file_diff(Path::new("a.txt"), Path::new("b.txt"), &plain, &mixed);
+        assert!(!out.contains("identical"), "got: {}", out);
+        assert_eq!(code, 1, "must exit 1 so a `diff` gate fails");
+        assert!(out.contains("0 CRLF vs 24 CRLF"), "got: {}", out);
     }
 
     #[test]
