@@ -25,7 +25,7 @@ The process of taking a Candidate PR into the fork: cherry-pick its commits, ver
 A fork-authored commit added on top of a cherry-picked contribution to complete it — missing tests, small fixes. Always a separate commit; never squashed into the contributor's commit. A PR needing more than amendments is not adopted — it's re-implemented, rejected, or queued for Contributor outreach.
 
 **Triage**:
-Crawling upstream's open PRs to classify each as a Candidate or a pass, bug fixes ranked ahead of features.
+Crawling upstream's open PRs to classify each as a Candidate or a pass, bug fixes ranked ahead of features. Before a Candidate is filed as an adoption ticket, verify the bug is real and still present on current develop (code inspection or repro) — an open upstream PR is not evidence its bug is unfixed; upstream may have merged a different fix (see triage 2026-07-17 verification sweep: #2263, #937).
 
 **Original fix**:
 A bug fix or change authored in the fork itself, not adopted from an upstream PR. Follows the same ticket → PR → verification workflow as an Adoption, minus the cherry-pick.
