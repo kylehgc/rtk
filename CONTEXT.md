@@ -19,7 +19,7 @@ A community PR whose commits have been cherry-picked into the fork, preserving o
 _Avoid_: ported, re-implemented, merged (reserve "merged" for upstream's own actions)
 
 **Adoption**:
-The process of taking a Candidate PR into the fork: cherry-pick its commits, verify the bug is actually fixed (repro-before/fixed-after), run the quality gate. Cherry-pick is the default; re-implementation is a fallback only when cherry-pick conflicts or the fix is right but the code is poor.
+The process of taking a Candidate PR into the fork: cherry-pick its commits, verify the bug is actually fixed (repro-before/fixed-after), run the quality gate. Cherry-pick is the default; re-implementation is a fallback only when cherry-pick conflicts or the fix is right but the code is poor. All adoption work happens on a topic branch and lands in `develop` via a fork PR — never as direct commits to `develop` (only Syncs touch `develop` directly).
 
 **Amendment**:
 A fork-authored commit added on top of a cherry-picked contribution to complete it — missing tests, small fixes. Always a separate commit; never squashed into the contributor's commit. A PR needing more than amendments is not adopted — it's re-implemented, rejected, or queued for Contributor outreach.
