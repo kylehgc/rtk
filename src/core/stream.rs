@@ -565,8 +565,8 @@ pub fn exec_capture(cmd: &mut Command) -> Result<CaptureResult> {
     cmd.stdin(Stdio::null());
     let output = cmd.output().context("Failed to execute command")?;
     Ok(CaptureResult {
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        stdout: super::utils::decode_process_output(&output.stdout),
+        stderr: super::utils::decode_process_output(&output.stderr),
         exit_code: status_to_exit_code(output.status),
     })
 }
@@ -576,8 +576,8 @@ pub fn exec_capture_stdin(cmd: &mut Command) -> Result<CaptureResult> {
     cmd.stdin(Stdio::inherit());
     let output = cmd.output().context("Failed to execute command")?;
     Ok(CaptureResult {
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        stdout: super::utils::decode_process_output(&output.stdout),
+        stderr: super::utils::decode_process_output(&output.stderr),
         exit_code: status_to_exit_code(output.status),
     })
 }
