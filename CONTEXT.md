@@ -1,0 +1,34 @@
+# rtk Fork Maintenance
+
+This fork (kylehgc/rtk) tracks upstream rtk-ai/rtk and adopts solid community fixes that upstream is too slow to merge, plus original fixes. This glossary covers the fork-maintenance process.
+
+## Language
+
+**Upstream**:
+The original rtk-ai/rtk repository. The fork merges its `develop` in periodically; it never receives pushes from us except via PRs.
+
+**Sync**:
+A `git merge upstream/develop` into the fork's mainline. Never a rebase — published history is append-only.
+_Avoid_: rebase, update
+
+**Candidate PR**:
+An open upstream PR that triage has flagged as potentially worth adopting, but not yet vetted.
+
+**Adopted PR**:
+A community PR whose commits have been cherry-picked into the fork, preserving original authorship, and verified against the quality gate.
+_Avoid_: ported, re-implemented, merged (reserve "merged" for upstream's own actions)
+
+**Adoption**:
+The process of taking a Candidate PR into the fork: cherry-pick its commits, verify the bug is actually fixed (repro-before/fixed-after), run the quality gate. Cherry-pick is the default; re-implementation is a fallback only when cherry-pick conflicts or the fix is right but the code is poor.
+
+**Amendment**:
+A fork-authored commit added on top of a cherry-picked contribution to complete it — missing tests, small fixes. Always a separate commit; never squashed into the contributor's commit. A PR needing more than amendments is not adopted — it's re-implemented, rejected, or queued for Contributor outreach.
+
+**Triage**:
+Crawling upstream's open PRs to classify each as a Candidate or a pass, bug fixes ranked ahead of features.
+
+**Original fix**:
+A bug fix or change authored in the fork itself, not adopted from an upstream PR. Follows the same ticket → PR → verification workflow as an Adoption, minus the cherry-pick.
+
+**Contributor outreach**:
+Engaging a community PR author directly — commenting upstream or inviting a PR against the fork — instead of silently adopting or fixing their work. Process not yet designed.
