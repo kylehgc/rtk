@@ -48,8 +48,11 @@ def _pre_tool_call(tool_name=None, args=None, **_kwargs):
             return
 
         try:
+            # The `--` terminator is REQUIRED: without it, a command like "--help"
+            # would be interpreted by clap as a flag to `rtk rewrite`, causing the
+            # help text to be emitted as the rewritten command (issue #1350).
             result = subprocess.run(
-                ["rtk", "rewrite", command],
+                ["rtk", "rewrite", "--", command],
                 shell=False,
                 timeout=2,
                 capture_output=True,

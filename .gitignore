@@ -27,6 +27,7 @@ Thumbs.db
 
 # Test artifacts
 *.cast.bak
+__pycache__/
 
 # Benchmark results (fixture data, not infra)
 scripts/benchmark/diff/

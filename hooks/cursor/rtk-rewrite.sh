@@ -41,7 +41,10 @@ fi
 # Delegate all rewrite logic to the Rust binary.
 # Exit codes: 0 = allow rewrite, 1 = no rewrite (passthrough),
 #             2 = deny, 3 = ask.
-REWRITTEN=$(rtk rewrite "$CMD" 2>/dev/null)
+# The `--` terminator is REQUIRED: without it, a command like "--help" or "-h"
+# would be interpreted by clap as a flag to `rtk rewrite`, causing the help text
+# to be emitted as the rewritten command and fed back to the agent (issue #1350).
+REWRITTEN=$(rtk rewrite -- "$CMD" 2>/dev/null)
 RC=$?
 if [ "$RC" -ne 0 ] && [ "$RC" -ne 3 ]; then
   echo '{}'

@@ -327,6 +327,34 @@ test_rewrite "node (no pattern)" \
 
 echo ""
 
+# ---- SECTION 5b: Flag injection safety (#1350) ----
+# Without the `--` terminator before "$CMD", an input like "--help" would be
+# interpreted by clap as a flag to `rtk rewrite`, causing the help text to be
+# emitted as the "rewritten" command and shell-executed by the agent.
+# Each of these inputs must produce NO rewrite.
+echo "--- Flag injection safety (#1350) ---"
+test_rewrite "flag injection: --help must not trigger clap help" \
+  "--help" \
+  ""
+
+test_rewrite "flag injection: -h must not trigger clap short help" \
+  "-h" \
+  ""
+
+test_rewrite "flag injection: --version must not trigger clap version" \
+  "--version" \
+  ""
+
+test_rewrite "flag injection: -V must not trigger clap short version" \
+  "-V" \
+  ""
+
+test_rewrite "flag injection: lone -- must not crash the hook" \
+  "--" \
+  ""
+
+echo ""
+
 # ---- SECTION 6: Audit logging ----
 echo "--- Audit logging (RTK_HOOK_AUDIT=1) ---"
 
