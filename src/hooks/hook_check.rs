@@ -112,9 +112,8 @@ fn check_and_warn() -> Option<()> {
 
     eprintln!("{}", warning);
 
-    // Touch marker after warning is printed
-    let _ = std::fs::create_dir_all(marker.parent()?);
-    let _ = std::fs::write(&marker, b"");
+    // Touch marker after warning is printed.
+    let _ = touch_warn_marker(&marker);
 
     Some(())
 }
@@ -144,6 +143,17 @@ fn hook_installed_path() -> Option<PathBuf> {
 fn warn_marker_path() -> Option<PathBuf> {
     let data_dir = dirs::data_local_dir()?.join(RTK_DATA_DIR);
     Some(data_dir.join(".hook_warn_last"))
+}
+
+/// Refresh the warn marker's mtime so the once-per-day rate limit resets.
+///
+/// Writes a non-empty payload — on Windows, writing 0 bytes to an already-empty
+/// file may not update the mtime, which breaks the rate-limiting check.
+fn touch_warn_marker(marker: &std::path::Path) -> std::io::Result<()> {
+    if let Some(parent) = marker.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(marker, b"1")
 }
 
 #[cfg(test)]
@@ -316,6 +326,55 @@ mod tests {
         )
         .unwrap();
         assert!(!other_integration_installed(tmp.path()));
+    }
+
+    #[test]
+    fn test_touch_warn_marker_writes_non_empty_payload() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // Nested so the call also has to create the parent directory.
+        let marker = tmp.path().join("rtk").join(".hook_warn_last");
+
+        touch_warn_marker(&marker).expect("touch marker");
+
+        let len = std::fs::metadata(&marker).expect("marker metadata").len();
+        assert!(
+            len > 0,
+            "marker must be written with a non-empty payload: on Windows, rewriting an \
+             already-empty file does not bump its mtime, so the once-per-day warning \
+             would fire on every command"
+        );
+    }
+
+    #[test]
+    fn test_touch_warn_marker_refreshes_mtime() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let marker = tmp.path().join(".hook_warn_last");
+
+        touch_warn_marker(&marker).expect("first touch");
+
+        // Backdate past the rate-limit window instead of sleeping, so the
+        // assertion is deterministic and the test stays fast.
+        let stale = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(WARN_INTERVAL_SECS + 60))
+            .expect("backdated timestamp");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&marker)
+            .expect("open marker")
+            .set_modified(stale)
+            .expect("backdate marker");
+
+        touch_warn_marker(&marker).expect("second touch");
+
+        let modified = std::fs::metadata(&marker)
+            .expect("marker metadata")
+            .modified()
+            .expect("marker mtime");
+        assert!(
+            modified > stale,
+            "touching an existing marker must move its mtime forward, otherwise the \
+             rate limit never resets and the warning repeats on every command"
+        );
     }
 
     #[test]
