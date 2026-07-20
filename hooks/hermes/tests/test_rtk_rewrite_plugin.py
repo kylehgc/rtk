@@ -62,7 +62,7 @@ def write_fake_rtk(bin_dir):
             )
         )
         fake_exe = bin_dir / "rtk.exe"
-        subprocess.run(["rustc", "-o", str(fake_exe), str(src)], check=True)
+        subprocess.run(["rustc", "-o", str(fake_exe), str(src)], check=True, timeout=120)
         return fake_exe
     fake_rtk = bin_dir / "rtk"
     fake_rtk.write_text(
@@ -326,7 +326,7 @@ class InstalledRtkRewritePluginTest(unittest.TestCase):
         # ignore_cleanup_errors: on Windows, virus scanners briefly hold a
         # handle on the freshly compiled fake rtk.exe, failing the unlink.
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory(
-            ignore_cleanup_errors=True
+            ignore_cleanup_errors=(os.name == "nt")
         ) as bin_dir:
             home_path = Path(home)
             fake_bin = Path(bin_dir)
