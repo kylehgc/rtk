@@ -8,7 +8,7 @@ This fork (kylehgc/rtk) tracks upstream rtk-ai/rtk and adopts solid community fi
 The original rtk-ai/rtk repository. The fork merges its `develop` in periodically; it never receives pushes from us except via PRs.
 
 **Sync**:
-A `git merge upstream/develop` into the fork's mainline. Never a rebase — published history is append-only.
+A `git merge upstream/develop` into the fork's mainline. Never a rebase — published history is append-only. Always Sync before starting any new work: fetch upstream, and if `upstream/develop` has commits the fork lacks, merge them into `develop` (quality gate included) first, so every Adoption or Original fix branches from a synced `develop`.
 _Avoid_: rebase, update
 
 **Candidate PR**:
