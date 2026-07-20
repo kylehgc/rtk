@@ -39,6 +39,31 @@ def load_plugin_module(path=PLUGIN_PATH, module_name="rtk_rewrite_plugin"):
 
 
 def write_fake_rtk(bin_dir):
+    if os.name == "nt":
+        # CreateProcess only resolves a bare "rtk" to rtk.exe, so a shebang
+        # script can't be used here; compile the same fake with rustc
+        # (guaranteed present: the installed-flow test requires cargo).
+        src = bin_dir / "fake_rtk.rs"
+        src.write_text(
+            "\n".join(
+                [
+                    "use std::env;",
+                    "fn main() {",
+                    "    let args: Vec<String> = env::args().skip(1).collect();",
+                    '    if args == ["rewrite", "git status"] {',
+                    '        println!("rtk git status");',
+                    "        return;",
+                    "    }",
+                    '    eprintln!("unexpected rtk args: {:?}", args);',
+                    "    std::process::exit(1);",
+                    "}",
+                    "",
+                ]
+            )
+        )
+        fake_exe = bin_dir / "rtk.exe"
+        subprocess.run(["rustc", "-o", str(fake_exe), str(src)], check=True)
+        return fake_exe
     fake_rtk = bin_dir / "rtk"
     fake_rtk.write_text(
         "\n".join(
@@ -292,25 +317,28 @@ class RtkRewritePluginTest(unittest.TestCase):
 
 
 class InstalledRtkRewritePluginTest(unittest.TestCase):
-    @unittest.skipIf(
-        sys.platform == "win32",
-        "unix-only: rtk resolves home via the Windows known-folder API (HOME/USERPROFILE"
-        " env vars are ignored, so init would write into the real ~/.hermes), and the"
-        " fake shebang rtk script is not executable on Windows",
-    )
     @unittest.skipUnless(shutil.which("cargo"), "cargo is required for installed flow")
     def test_cargo_init_installs_importable_plugin_that_rewrites_with_fake_rtk(self):
         repo_root = Path(__file__).resolve().parents[3]
         self.assertTrue((repo_root / "Cargo.toml").exists(), "repo_root must point at the repository root")
         real_home = Path(os.path.expanduser("~"))
 
-        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as bin_dir:
+        # ignore_cleanup_errors: on Windows, virus scanners briefly hold a
+        # handle on the freshly compiled fake rtk.exe, failing the unlink.
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory(
+            ignore_cleanup_errors=True
+        ) as bin_dir:
             home_path = Path(home)
             fake_bin = Path(bin_dir)
             write_fake_rtk(fake_bin)
 
             env = os.environ.copy()
             env["HOME"] = str(home_path)
+            if os.name == "nt":
+                # dirs::home_dir() uses the known-folder API on Windows and
+                # ignores HOME/USERPROFILE; redirect via rtk's HERMES_HOME
+                # override so init writes into the temp dir, not ~/.hermes.
+                env["HERMES_HOME"] = str(home_path / ".hermes")
             env["PATH"] = str(fake_bin) + os.pathsep + env.get("PATH", "")
             env["RTK_TELEMETRY_DISABLED"] = "1"
             env["CARGO_TERM_COLOR"] = "never"
