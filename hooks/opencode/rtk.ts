@@ -26,7 +26,10 @@ export const RtkOpenCodePlugin: Plugin = async ({ $ }) => {
       if (typeof command !== "string" || !command) return
 
       try {
-        const result = await $`rtk rewrite ${command}`.quiet().nothrow()
+        // The `--` terminator is REQUIRED: without it, a command like "--help"
+        // would be interpreted by clap as a flag to `rtk rewrite`, causing the
+        // help text to be emitted as the rewritten command (issue #1350).
+        const result = await $`rtk rewrite -- ${command}`.quiet().nothrow()
         const rewritten = String(result.stdout).trim()
         if (rewritten && rewritten !== command) {
           ;(args as Record<string, unknown>).command = rewritten

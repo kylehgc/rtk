@@ -29,7 +29,10 @@ async function rewriteCommand(
   cmd: string,
   signal?: AbortSignal
 ): Promise<string | null> {
-  const result = await pi.exec("rtk", ["rewrite", cmd], {
+  // The `--` terminator is REQUIRED: without it, a command like "--help"
+  // would be interpreted by clap as a flag to `rtk rewrite`, causing the
+  // help text to be emitted as the rewritten command (issue #1350).
+  const result = await pi.exec("rtk", ["rewrite", "--", cmd], {
     timeout: REWRITE_TIMEOUT_MS,
     signal,
   })

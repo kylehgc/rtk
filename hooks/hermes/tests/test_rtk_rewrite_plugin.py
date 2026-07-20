@@ -45,7 +45,7 @@ def write_fake_rtk(bin_dir):
             [
                 f"#!{sys.executable}",
                 "import sys",
-                "if sys.argv[1:] == ['rewrite', 'git status']:",
+                "if sys.argv[1:] == ['rewrite', '--', 'git status']:",
                 "    print('rtk git status')",
                 "    raise SystemExit(0)",
                 "print('unexpected rtk args:', sys.argv[1:], file=sys.stderr)",
