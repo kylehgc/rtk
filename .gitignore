@@ -39,7 +39,8 @@ benchmark-report.md
 *.sqlite
 *.sqlite3
 rtk_tracking.db
-claudedocs
+# fork: claudedocs/ is intentionally tracked (adoption triage docs for collaborators);
+# upstream ignores it here
 .omc
 
 # Vitals provenance data
