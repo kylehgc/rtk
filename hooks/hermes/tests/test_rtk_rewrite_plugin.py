@@ -292,6 +292,12 @@ class RtkRewritePluginTest(unittest.TestCase):
 
 
 class InstalledRtkRewritePluginTest(unittest.TestCase):
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "unix-only: rtk resolves home via the Windows known-folder API (HOME/USERPROFILE"
+        " env vars are ignored, so init would write into the real ~/.hermes), and the"
+        " fake shebang rtk script is not executable on Windows",
+    )
     @unittest.skipUnless(shutil.which("cargo"), "cargo is required for installed flow")
     def test_cargo_init_installs_importable_plugin_that_rewrites_with_fake_rtk(self):
         repo_root = Path(__file__).resolve().parents[3]
