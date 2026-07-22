@@ -339,6 +339,24 @@ src/app.tsx(20,5): error TS2345: Argument of type 'number' is not assignable to 
     }
 
     #[test]
+    fn test_filter_tsc_pretty_real_fixture_token_savings() {
+        // Real `tsc --noEmit --pretty` output (ANSI colors, code frames, carets)
+        let input = include_str!("../../../tests/fixtures/tsc_pretty_errors_raw.txt");
+        let result = filter_tsc_output(input);
+
+        assert!(result.contains("TS2322"), "got: {}", result);
+        assert!(result.contains("src/api/userService.ts"), "got: {}", result);
+        assert!(!result.contains("\x1b["), "ANSI leaked: {}", result);
+
+        // Use rtk's own token estimator (chars/4) — the metric `rtk gain` reports.
+        // Whitespace-based counting is blind to the ANSI escape codes this filter strips.
+        use crate::core::tracking::estimate_tokens;
+        let savings =
+            100.0 - (estimate_tokens(&result) as f64 / estimate_tokens(input) as f64 * 100.0);
+        assert!(savings >= 60.0, "expected >=60% savings, got {:.1}%", savings);
+    }
+
+    #[test]
     fn test_filter_no_errors() {
         let output = "Found 0 errors. Watching for file changes.";
         let result = filter_tsc_output(output);

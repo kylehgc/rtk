@@ -1,0 +1,62 @@
+[96msrc/api/userService.ts[0m:[93m4[0m:[93m11[0m - [91merror[0m[90m TS2322: [0mType 'string' is not assignable to type 'number'.
+
+[7m4[0m     const numericId: number = userId;
+[7m [0m [91m          ~~~~~~~~~[0m
+
+[96msrc/api/userService.ts[0m:[93m5[0m:[93m51[0m - [91merror[0m[90m TS2322: [0mType 'number' is not assignable to type 'string'.
+
+[7m5[0m     const profile: UserProfile = { id: numericId, displayName: 42, email: null };
+[7m [0m [91m                                                  ~~~~~~~~~~~[0m
+
+  [96msrc/api/userService.ts[0m:[93m1[0m:[93m37[0m - The expected type comes from property 'displayName' which is declared here on type 'UserProfile'
+    [7m1[0m interface UserProfile { id: number; displayName: string; email: string }
+    [7m [0m [96m                                    ~~~~~~~~~~~[0m
+
+[96msrc/api/userService.ts[0m:[93m5[0m:[93m68[0m - [91merror[0m[90m TS2322: [0mType 'null' is not assignable to type 'string'.
+
+[7m5[0m     const profile: UserProfile = { id: numericId, displayName: 42, email: null };
+[7m [0m [91m                                                                   ~~~~~[0m
+
+  [96msrc/api/userService.ts[0m:[93m1[0m:[93m58[0m - The expected type comes from property 'email' which is declared here on type 'UserProfile'
+    [7m1[0m interface UserProfile { id: number; displayName: string; email: string }
+    [7m [0m [96m                                                         ~~~~~[0m
+
+[96msrc/api/userService.ts[0m:[93m6[0m:[93m20[0m - [91merror[0m[90m TS2339: [0mProperty 'fullName' does not exist on type 'UserProfile'.
+
+[7m6[0m     return profile.fullName;
+[7m [0m [91m                   ~~~~~~~~[0m
+
+[96msrc/api/userService.ts[0m:[93m10[0m:[93m56[0m - [91merror[0m[90m TS2339: [0mProperty 'age' does not exist on type 'UserProfile'.
+
+[7m10[0m     return profile.displayName.toUpperCase() + profile.age;
+[7m  [0m [91m                                                       ~~~[0m
+
+[96msrc/components/SettingsPanel.tsx[0m:[93m4[0m:[93m38[0m - [91merror[0m[90m TS2345: [0mArgument of type 'number' is not assignable to parameter of type 'string'.
+
+[7m4[0m     const profile = fetchUserProfile(currentUserId);
+[7m [0m [91m                                     ~~~~~~~~~~~~~[0m
+
+[96msrc/components/SettingsPanel.tsx[0m:[93m5[0m:[93m38[0m - [91merror[0m[90m TS2322: [0mType 'number' is not assignable to type 'string'.
+
+[7m5[0m     const sectionTitles: string[] = [profile.id, profile.email];
+[7m [0m [91m                                     ~~~~~~~~~~[0m
+
+[96msrc/components/SettingsPanel.tsx[0m:[93m6[0m:[93m30[0m - [91merror[0m[90m TS2345: [0mArgument of type '(sectionTitle: number) => any' is not assignable to parameter of type '(value: string, index: number, array: string[]) => any'.
+  Types of parameters 'sectionTitle' and 'value' are incompatible.
+    Type 'string' is not assignable to type 'number'.
+
+[7m6[0m     return sectionTitles.map((sectionTitle: number) => sectionTitle.toLowerCase());
+[7m [0m [91m                             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+
+[96msrc/components/SettingsPanel.tsx[0m:[93m6[0m:[93m69[0m - [91merror[0m[90m TS2339: [0mProperty 'toLowerCase' does not exist on type 'number'.
+
+[7m6[0m     return sectionTitles.map((sectionTitle: number) => sectionTitle.toLowerCase());
+[7m [0m [91m                                                                    ~~~~~~~~~~~[0m
+
+
+Found 9 errors in 2 files.
+
+Errors  Files
+     5  src/api/userService.ts[90m:4[0m
+     4  src/components/SettingsPanel.tsx[90m:4[0m
+
