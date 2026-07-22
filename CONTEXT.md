@@ -31,4 +31,13 @@ Crawling upstream's open PRs to classify each as a Candidate or a pass, bug fixe
 A bug fix or change authored in the fork itself, not adopted from an upstream PR. Follows the same ticket → PR → verification workflow as an Adoption, minus the cherry-pick.
 
 **Contributor outreach**:
-Engaging a community PR author directly — commenting upstream or inviting a PR against the fork — instead of silently adopting or fixing their work. Process not yet designed.
+Engaging a community PR author directly — commenting upstream or inviting a PR against the fork — instead of silently adopting or fixing their work. When a contributor opens a PR against the fork, it goes through Fork PR intake.
+
+## Fork PR intake
+
+How to handle a PR opened against the fork by someone other than the maintainer (first case: PR #43 by kingpy-bot, author of upstream #2951). Four gates, in order:
+
+1. **Scope**: The PR must be an Adoption of an upstream PR, ideally tied to an open fork adoption issue. Original work from non-contributors is redirected upstream with a comment and closed — the fork tracks upstream; new features belong there first.
+2. **Verification**: Same bar as a self-made Adoption, zero trust in the author's claims. The diff must match the upstream PR (byte-identical, or every deviation explained), authorship preserved as a cherry-pick, and the maintainer runs the repro check and quality gate locally. Fork CI does not run, so the local gate is the merge gate — a green-looking PR proves nothing.
+3. **Safety**: Building or testing an external branch executes its code (build.rs, proc-macro deps, test bodies). Read the full diff before running cargo on the branch. Any change to `Cargo.toml`, `build.rs`, or dependencies is a hard stop for manual scrutiny; pure `src/**/*.rs` + `tests/**` diffs are low risk once read.
+4. **Fixes**: Follow the Amendment rule — small gaps get fork-authored commits on top, never revision ping-pong with a drive-by contributor. Needs more than amendments → close with credit and adopt via the normal cherry-pick route (authorship survives either way).
