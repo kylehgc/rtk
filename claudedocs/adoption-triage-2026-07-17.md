@@ -1,5 +1,7 @@
 # Upstream PR Adoption Triage — 2026-07-17
 
+> **⚠️ Re-verified 2026-07-22 — read [adoption-reverify-2026-07-22.md](adoption-reverify-2026-07-22.md) before acting on any row below.** That sweep found ~35 CANDIDATE rows here superseded or stale (largest cause: upstream's grep/search rework `eafadce` killed #2183 #2168 #2126 #2149 #2434 #2460 #2254 #2224 #2607 #2348 #2910; `d0a77cd` killed #1968 #2341 #2227; others: #673 #679 #419 #792 #1075 #1185 #1204 #1286 #1294 #1358 #1386 #1423 #1508 #1513 #1638 #1678 #1689 #1725 #1843 #1857 #2049 #2263 #2440 #2450 #2488 #2533 #2571 #2602), plus 7 missed CANDIDATEs in the auto-pass bucket (#2075 #1504 #1815 #1873 #1987 #2776 #2875) and one factual error: #1491's row calls #678 a "merged pnpm fix" — **#678 is still open**, its bug still live. The 2026-07-22 doc is authoritative where it disagrees with this one.
+
 Full sweep of **832 open PRs** on rtk-ai/rtk (see [ADR 0001](../docs/adr/0001-merge-based-tracking-fork.md) and [CONTEXT.md](../CONTEXT.md) for the adoption model).
 
 **Coverage**: 485 deep-reviewed (all fix/unprefixed/test/perf PRs) + 278 feature PRs shortlisted by a dedicated pass + 69 auto-passed on metadata (drafts, dependabot, docs/chore/ci-only). Every PR number links to upstream.

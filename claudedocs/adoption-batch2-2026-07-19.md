@@ -1,5 +1,7 @@
 # Upstream PR Adoption — Batch 2 shortlist (2026-07-19)
 
+> **Re-verified 2026-07-22** ([adoption-reverify-2026-07-22.md](adoption-reverify-2026-07-22.md)): all 20 queue items below remain valid. A third batch (top 10 from the re-verification, filed as issues 2026-07-22) now queues alongside this one.
+
 Next 20 PRs to consider adopting, drawn from the [2026-07-17 triage](adoption-triage-2026-07-17.md) (rankings re-checked against upstream state today). Ranked for this fork's profile: Windows + Claude Code + js stack.
 
 **Filed as fork issues (2026-07-19)**: items 1–4 were already covered by open issues [#7](https://github.com/kylehgc/rtk/issues/7) (git log --stat) and [#8](https://github.com/kylehgc/rtk/issues/8) (vitest cluster); items 5–20 are now issues [#19](https://github.com/kylehgc/rtk/issues/19)–[#34](https://github.com/kylehgc/rtk/issues/34), filed in the order listed below.
@@ -53,8 +55,8 @@ Next 20 PRs to consider adopting, drawn from the [2026-07-17 triage](adoption-tr
 
 ## Adoption-time flags
 
-- **#2571** (keep ask on mixed compound rewrites) deliberately left out: likely overlaps our adopted #3031 port (`e93cde8`). Re-check against our hook code before considering.
-- **#2274** (only rewrite last pipe segment) left out: overlaps our adopted #2965 pipe-skip generalization (`e95207d`/`e1e37fd`). Re-check what remains unfixed.
+- **#2571** (keep ask on mixed compound rewrites) deliberately left out: ~~likely overlaps our adopted #3031 port (`e93cde8`). Re-check against our hook code before considering.~~ **Re-checked 2026-07-22: fully covered — our e93cde8 port is strictly better (has a bypassPermissions carve-out #2571 lacks). PASS.**
+- **#2274** (only rewrite last pipe segment) left out: ~~overlaps our adopted #2965 pipe-skip generalization (`e95207d`/`e1e37fd`). Re-check what remains unfixed.~~ **Re-checked 2026-07-22: real gaps remain — our #2965 blacklist only covers 8 shape-changing filters, so `curl … | jq` still gets rewritten and `git diff > file.patch` still corrupts the patch (redirect exclusion only exists for cat/head/tail). Adopt the idea (last-segment-only + stdout-redirect skip) as a re-implementation; the patch won't apply to our diverged registry.**
 - **#2887** vs already-adopted work: none — but it's a duplicate cluster (#2396 best-TDD, #2612); adopt exactly one.
 - **New PR flood 07-19/07-20**: `lntutor` opened ~24 PRs in one evening, many duplicating existing candidates (#3083≈#2670, #3084≈#2473, #3085≈#2635, #3086≈#2715, #3087≈#2677). Treat as low-trust dups; prefer the originals already triaged.
 - **Worth a look next sweep**: [#3067](https://github.com/rtk-ai/rtk/pull/3067) (js parser fallbacks preserve failed output), [#3057](https://github.com/rtk-ai/rtk/pull/3057) (argv boundary preservation — breaking-change flagged), [#3041](https://github.com/rtk-ai/rtk/pull/3041) (exclude_commands on resolved tool — interacts with #9/#10 above).
