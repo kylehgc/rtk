@@ -84,9 +84,10 @@ fn detect_format(v: &Value) -> HookFormat {
         return HookFormat::PassThrough;
     }
 
-    // Copilot CLI: camelCase keys, toolArgs is a JSON-encoded string
+    // Copilot CLI: camelCase keys, toolArgs is a JSON-encoded string.
+    // The shell tool is "bash" on Unix and "powershell" on Windows.
     if let Some(tool_name) = v.get("toolName").and_then(|t| t.as_str()) {
-        if tool_name == "bash" {
+        if matches!(tool_name, "bash" | "powershell") {
             if let Some(tool_args_str) = v.get("toolArgs").and_then(|t| t.as_str()) {
                 if let Ok(tool_args) = serde_json::from_str::<Value>(tool_args_str) {
                     if let Some(cmd) = tool_args
@@ -705,6 +706,19 @@ mod tests {
     fn test_detect_copilot_cli_bash() {
         assert!(matches!(
             detect_format(&copilot_cli_input("git status")),
+            HookFormat::CopilotCli { .. }
+        ));
+    }
+
+    #[test]
+    fn test_detect_copilot_cli_powershell() {
+        // Copilot CLI on Windows names its shell tool "powershell", not "bash".
+        // Without this the payload falls through to PassThrough and only the
+        // Claude-compat PreToolUse entry answers, which prompts on every command.
+        let args = serde_json::to_string(&json!({ "command": "git status" })).unwrap();
+        let input = json!({ "toolName": "powershell", "toolArgs": args });
+        assert!(matches!(
+            detect_format(&input),
             HookFormat::CopilotCli { .. }
         ));
     }
