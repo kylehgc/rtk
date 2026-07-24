@@ -7,6 +7,9 @@ This fork (kylehgc/rtk) tracks upstream rtk-ai/rtk and adopts solid community fi
 **Upstream**:
 The original rtk-ai/rtk repository. The fork merges its `develop` in periodically; it never receives pushes from us except via PRs.
 
+**Origin**:
+This fork, `kylehgc/rtk`. Unqualified "open issues" / "open PRs" — "look at open issues", "what's still open" — always mean origin's: adoption tickets and fork PRs. Upstream's are named explicitly ("upstream issues", "upstream PRs", "rtk-ai/rtk"). Triage is the standing exception: it crawls upstream's PRs by definition.
+
 **Sync**:
 A `git merge upstream/develop` into the fork's mainline. Never a rebase — published history is append-only. Always Sync before starting any new work: fetch upstream, and if `upstream/develop` has commits the fork lacks, merge them into `develop` (quality gate included) first, so every Adoption or Original fix branches from a synced `develop`. A clean merge commits to `develop` directly. A **Conflicted Sync** — any merge requiring manual conflict resolution — goes through a topic branch and fork PR instead (see Conflicted Sync).
 _Avoid_: rebase, update
@@ -31,7 +34,10 @@ A fork-authored commit added on top of a cherry-picked contribution to complete 
 Crawling upstream's open PRs to classify each as a Candidate or a pass, bug fixes ranked ahead of features. Before a Candidate is filed as an adoption ticket, verify the bug is real and still present on current develop (code inspection or repro) — an open upstream PR is not evidence its bug is unfixed; upstream may have merged a different fix (see triage 2026-07-17 verification sweep: #2263, #937).
 
 **Original fix**:
-A bug fix or change authored in the fork itself, not adopted from an upstream PR. Follows the same ticket → PR → verification workflow as an Adoption, minus the cherry-pick.
+A bug fix or change authored in the fork itself, not adopted from an upstream PR. Follows the same ticket → PR → verification workflow as an Adoption, minus the cherry-pick. It is **not done when the fork PR merges**: an Adoption is self-healing upstream — the contributor's PR is already open there — but an Original fix exists nowhere else and is stranded until submitted. So if it closes an upstream issue, cherry-pick the commits onto a branch off `upstream/develop`, run the quality gate on *that* branch, and open the Upstream PR before closing the ticket. First instance: `mvnd`/upstream #3184, merged into the fork 2026-07-24 and caught by the issue reporter three hours later — see upstream PR #3199.
+
+**Upstream PR**:
+A PR from the fork to `rtk-ai/rtk`, the only way fork work reaches upstream users. Never open one from `develop` — the fork's mainline carries dozens of unrelated commits. Always a topic branch off `upstream/develop` carrying only the commits for that one change, targeting upstream's `develop` (never `master`). Upstream requires a CLA signature on first contribution.
 
 **Contributor outreach**:
 Engaging a community PR author directly — commenting upstream or inviting a PR against the fork — instead of silently adopting or fixing their work. When a contributor opens a PR against the fork, it goes through Fork PR intake.
