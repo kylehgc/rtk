@@ -871,8 +871,12 @@ pub fn filter_quiet(raw: &str) -> String {
 
 // ── Wrapper detection ───────────────────────────────────────────────────────
 
-fn mvn_binary() -> &'static str {
-    if cfg!(windows) {
+/// Maven Daemon (`mvnd`) has no project-local wrapper of its own, so it is
+/// never substituted by `./mvnw`: the user asked for the daemon explicitly.
+fn mvn_binary(daemon: bool) -> &'static str {
+    if daemon {
+        "mvnd"
+    } else if cfg!(windows) {
         if Path::new(".\\mvnw.cmd").exists() {
             ".\\mvnw.cmd"
         } else {
@@ -885,8 +889,10 @@ fn mvn_binary() -> &'static str {
     }
 }
 
-fn new_mvn_command(args: &[String]) -> Command {
-    let mut cmd = if cfg!(windows) {
+fn new_mvn_command(args: &[String], daemon: bool) -> Command {
+    let mut cmd = if daemon {
+        resolved_command("mvnd")
+    } else if cfg!(windows) {
         if Path::new(".\\mvnw.cmd").exists() {
             Command::new(".\\mvnw.cmd")
         } else {
@@ -904,16 +910,27 @@ fn new_mvn_command(args: &[String]) -> Command {
 // ── Entry point ─────────────────────────────────────────────────────────────
 
 pub fn run(args: &[String], verbose: u8) -> Result<i32> {
+    run_tool(args, false, verbose)
+}
+
+/// `rtk mvnd` — Maven Daemon. Non-interactive `mvnd` output is plain Maven
+/// output (the rolling console UI only engages on a TTY), so the same phase
+/// detection and filters apply; only the executed binary differs.
+pub fn run_daemon(args: &[String], verbose: u8) -> Result<i32> {
+    run_tool(args, true, verbose)
+}
+
+fn run_tool(args: &[String], daemon: bool, verbose: u8) -> Result<i32> {
     // Verbose flags bypass filtering — user wants full output.
     if args
         .iter()
         .any(|a| matches!(a.as_str(), "-X" | "--debug" | "-e" | "--errors"))
     {
         let osargs: Vec<OsString> = args.iter().map(OsString::from).collect();
-        return runner::run_passthrough(mvn_binary(), &osargs, verbose);
+        return runner::run_passthrough(mvn_binary(daemon), &osargs, verbose);
     }
 
-    let tool = mvn_binary();
+    let tool = mvn_binary(daemon);
     let args_display = args.join(" ");
 
     // Quiet mode: standard footer guard can't fire (no `BUILD SUCCESS` line
@@ -926,7 +943,7 @@ pub fn run(args: &[String], verbose: u8) -> Result<i32> {
             return runner::run_passthrough(tool, &osargs, verbose);
         }
         return runner::run_filtered(
-            new_mvn_command(args),
+            new_mvn_command(args, daemon),
             tool,
             &args_display,
             filter_quiet,
@@ -938,21 +955,21 @@ pub fn run(args: &[String], verbose: u8) -> Result<i32> {
 
     match phase {
         MvnPhase::Test => runner::run_filtered(
-            new_mvn_command(args),
+            new_mvn_command(args, daemon),
             tool,
             &args_display,
             filter_surefire,
             RunOptions::with_tee("mvn_test"),
         ),
         MvnPhase::Compile => runner::run_filtered(
-            new_mvn_command(args),
+            new_mvn_command(args, daemon),
             tool,
             &args_display,
             filter_compile,
             RunOptions::with_tee("mvn_compile"),
         ),
         MvnPhase::Package => runner::run_filtered(
-            new_mvn_command(args),
+            new_mvn_command(args, daemon),
             tool,
             &args_display,
             filter_package,
@@ -1069,6 +1086,20 @@ mod tests {
     #[test]
     fn phase_help() {
         assert_eq!(detect_phase(&s(["--help"])), MvnPhase::Passthrough);
+    }
+
+    // ── Binary selection ─────────────────────────────────────────────────────
+
+    /// rtk-ai/rtk#3184 — the daemon is never swapped for `mvn`/`./mvnw`,
+    /// whatever wrapper happens to sit in the working directory.
+    #[test]
+    fn mvnd_binary_is_never_the_wrapper() {
+        assert_eq!(mvn_binary(true), "mvnd");
+    }
+
+    #[test]
+    fn mvn_binary_without_daemon_is_not_mvnd() {
+        assert_ne!(mvn_binary(false), "mvnd");
     }
 
     // ── Surefire filter ──────────────────────────────────────────────────────
