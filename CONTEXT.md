@@ -8,8 +8,11 @@ This fork (kylehgc/rtk) tracks upstream rtk-ai/rtk and adopts solid community fi
 The original rtk-ai/rtk repository. The fork merges its `develop` in periodically; it never receives pushes from us except via PRs.
 
 **Sync**:
-A `git merge upstream/develop` into the fork's mainline. Never a rebase — published history is append-only. Always Sync before starting any new work: fetch upstream, and if `upstream/develop` has commits the fork lacks, merge them into `develop` (quality gate included) first, so every Adoption or Original fix branches from a synced `develop`.
+A `git merge upstream/develop` into the fork's mainline. Never a rebase — published history is append-only. Always Sync before starting any new work: fetch upstream, and if `upstream/develop` has commits the fork lacks, merge them into `develop` (quality gate included) first, so every Adoption or Original fix branches from a synced `develop`. A clean merge commits to `develop` directly. A **Conflicted Sync** — any merge requiring manual conflict resolution — goes through a topic branch and fork PR instead (see Conflicted Sync).
 _Avoid_: rebase, update
+
+**Conflicted Sync**:
+A Sync whose merge hits conflicts, meaning fork work and upstream work collided — usually because upstream shipped its own solution to a problem the fork had already patched. Resolution happens on a topic branch and lands via a fork PR, never as a direct commit to `develop`. The PR description must record: which fork code was removed or superseded, why the upstream version won (or why the fork's was kept), and any fork tests updated to match new upstream behavior. This keeps the removal of contributed work reviewable and attributable — contributor-friendly for the fork, and an honest record of where upstream superseded us. First instance: merge `e32bb38` (2026-07-23, resolved pre-policy, direct to `develop`) — see `claudedocs/sync-conflict-2026-07-23.md`.
 
 **Candidate PR**:
 An open upstream PR that triage has flagged as potentially worth adopting, but not yet vetted.
