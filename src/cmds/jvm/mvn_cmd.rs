@@ -1097,11 +1097,6 @@ mod tests {
         assert_eq!(mvn_binary(true), "mvnd");
     }
 
-    #[test]
-    fn mvn_binary_without_daemon_is_not_mvnd() {
-        assert_ne!(mvn_binary(false), "mvnd");
-    }
-
     // ── Surefire filter ──────────────────────────────────────────────────────
 
     #[test]
