@@ -48,5 +48,9 @@ rtk_tracking.db
 .vitals/
 .worktrees/
 
-# icm 
+# icm
 .fastembed_cache/
+
+# fork: playwright-cli scratch output (console-*.log / page-*.yml dumps);
+# agent tool artifacts, not authored content
+.playwright-cli/
