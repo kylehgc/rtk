@@ -10,6 +10,10 @@ The original rtk-ai/rtk repository. The fork merges its `develop` in periodicall
 **Origin**:
 This fork, `kylehgc/rtk`. Unqualified "open issues" / "open PRs" — "look at open issues", "what's still open" — always mean origin's: adoption tickets and fork PRs. Upstream's are named explicitly ("upstream issues", "upstream PRs", "rtk-ai/rtk"). Triage is the standing exception: it crawls upstream's PRs by definition.
 
+`gh repo set-default` is pinned to `kylehgc/rtk` so bare `gh issue list` / `gh pr list` resolve here (`remote.origin.gh-resolved=base`). It previously pointed at `upstream`, which is how "look at open issues" surfaced upstream's backlog and #3184 became work by accident. If a clone or a re-run of `gh repo set-default` ever flips it back, `gh repo set-default --view` should read `kylehgc/rtk`.
+
+An upstream issue is never work on sight. Reading one is not claiming it: it becomes work only once it has an origin ticket, and that decision is the maintainer's, not a byproduct of a listing.
+
 **Sync**:
 A `git merge upstream/develop` into the fork's mainline. Never a rebase — published history is append-only. Always Sync before starting any new work: fetch upstream, and if `upstream/develop` has commits the fork lacks, merge them into `develop` (quality gate included) first, so every Adoption or Original fix branches from a synced `develop`. A clean merge commits to `develop` directly. A **Conflicted Sync** — any merge requiring manual conflict resolution — goes through a topic branch and fork PR instead (see Conflicted Sync).
 _Avoid_: rebase, update
