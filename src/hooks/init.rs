@@ -534,18 +534,21 @@ fn print_manual_instructions(hook_command: &str, include_opencode: bool) {
     println!("\n  MANUAL STEP: Add this to {}:", settings_path.display());
     println!("  {{");
     println!("    \"hooks\": {{ \"PreToolUse\": [");
-    println!("      {{");
-    println!("        \"matcher\": \"Bash\",");
-    println!("        \"hooks\": [{{ \"type\": \"command\",");
-    println!("          \"command\": \"{}\"", hook_command);
-    println!("        }}]");
-    println!("      }},");
-    println!("      {{");
-    println!("        \"matcher\": \"PowerShell\",");
-    println!("        \"hooks\": [{{ \"type\": \"command\",");
-    println!("          \"command\": \"{}\"", hook_command);
-    println!("        }}]");
-    println!("      }}");
+    // Driven off CLAUDE_HOOK_MATCHERS so the manual instructions can't drift
+    // from what insert_hook_entry actually writes.
+    for (i, matcher) in CLAUDE_HOOK_MATCHERS.iter().enumerate() {
+        let comma = if i + 1 < CLAUDE_HOOK_MATCHERS.len() {
+            ","
+        } else {
+            ""
+        };
+        println!("      {{");
+        println!("        \"matcher\": \"{}\",", matcher);
+        println!("        \"hooks\": [{{ \"type\": \"command\",");
+        println!("          \"command\": \"{}\"", hook_command);
+        println!("        }}]");
+        println!("      }}{}", comma);
+    }
     println!("    ]}}");
     println!("  }}");
     if include_opencode {
@@ -4064,8 +4067,21 @@ fn show_claude_config() -> Result<()> {
         let content = fs::read_to_string(&settings_path)?;
         if !content.trim().is_empty() {
             if let Ok(root) = serde_json::from_str::<serde_json::Value>(&content) {
-                if hook_already_present(&root, CLAUDE_HOOK_COMMAND) {
+                if all_hook_matchers_present(&root, CLAUDE_HOOK_COMMAND) {
                     println!("[ok] settings.json: RTK hook configured");
+                } else if hook_already_present(&root, CLAUDE_HOOK_COMMAND) {
+                    // Registered, but not for every matcher — an install from an
+                    // older rtk has Bash only, so Windows PowerShell calls miss it.
+                    let missing: Vec<&str> = CLAUDE_HOOK_MATCHERS
+                        .iter()
+                        .copied()
+                        .filter(|m| !matcher_has_rtk_hook(&root, CLAUDE_HOOK_COMMAND, m))
+                        .collect();
+                    println!(
+                        "[warn] settings.json: RTK hook configured, missing matcher: {}",
+                        missing.join(", ")
+                    );
+                    println!("    Run: rtk init -g --auto-patch");
                 } else {
                     println!("[warn] settings.json: exists but RTK hook not configured");
                     println!("    Run: rtk init -g --auto-patch");
@@ -6438,6 +6454,31 @@ mod tests {
         );
         assert_eq!(pre_tool_use[0]["hooks"][0]["command"], legacy);
         assert_eq!(pre_tool_use[1]["matcher"], "PowerShell");
+    }
+
+    /// The status display distinguishes three states. A Bash-only install is
+    /// "present" (so it isn't reported as unconfigured) but not "complete", so
+    /// `rtk init --show` can tell the user to re-run init instead of [ok].
+    #[test]
+    fn test_bash_only_install_is_present_but_incomplete() {
+        let hook_command = CLAUDE_HOOK_COMMAND;
+        let json_content = serde_json::json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "Bash",
+                    "hooks": [{ "type": "command", "command": hook_command }]
+                }]
+            }
+        });
+
+        assert!(
+            hook_already_present(&json_content, hook_command),
+            "status must not claim RTK is unconfigured"
+        );
+        assert!(
+            !all_hook_matchers_present(&json_content, hook_command),
+            "status must not claim RTK is fully configured"
+        );
     }
 
     /// `matcher_has_rtk_hook` must not credit a matcher for another one's hook.
