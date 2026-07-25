@@ -55,6 +55,19 @@ pub fn strip_ansi(text: &str) -> String {
     ANSI_RE.replace_all(text, "").to_string()
 }
 
+/// Strip one or more leading UTF-8 BOMs (`EF BB BF`, sometimes doubled),
+/// which serde_json refuses to parse. Windows editors (Notepad, PowerShell
+/// 5.1 `Out-File -Encoding utf8`) prepend one to hand-edited config files,
+/// and Cursor on Windows ships hook payloads with them. Strip defensively
+/// wherever RTK parses JSON a human or another tool may have written.
+pub fn strip_leading_bom(input: &str) -> &str {
+    let mut s = input;
+    while let Some(rest) = s.strip_prefix('\u{feff}') {
+        s = rest;
+    }
+    s
+}
+
 /// Executes a command and returns cleaned stdout/stderr.
 ///
 /// # Arguments
@@ -405,7 +418,7 @@ fn composer_bin_dirs_from(env_bin_dir: Option<&str>, composer_json: Option<&str>
 }
 
 fn read_composer_bin_dir(composer_json: &str) -> Option<PathBuf> {
-    let parsed: Value = serde_json::from_str(composer_json).ok()?;
+    let parsed: Value = serde_json::from_str(strip_leading_bom(composer_json)).ok()?;
     let bin_dir = parsed.get("config")?.get("bin-dir")?.as_str()?.trim();
     if bin_dir.is_empty() {
         None
@@ -519,6 +532,19 @@ fn codepage_to_encoding(cp: u32) -> Option<&'static encoding_rs::Encoding> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_strip_leading_bom_helper() {
+        // Direct unit test on the helper so future refactors can't
+        // regress the loop semantics without a clear failure signal.
+        assert_eq!(strip_leading_bom(""), "");
+        assert_eq!(strip_leading_bom("hello"), "hello");
+        assert_eq!(strip_leading_bom("\u{feff}hello"), "hello");
+        assert_eq!(strip_leading_bom("\u{feff}\u{feff}hello"), "hello");
+        assert_eq!(strip_leading_bom("\u{feff}\u{feff}\u{feff}hello"), "hello");
+        // BOM in the middle is preserved (not "leading").
+        assert_eq!(strip_leading_bom("a\u{feff}b"), "a\u{feff}b");
+    }
 
     #[test]
     fn test_truncate_short_string() {
