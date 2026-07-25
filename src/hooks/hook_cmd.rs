@@ -1122,6 +1122,24 @@ mod tests {
     }
 
     #[test]
+    fn test_claude_tool_input_wins_over_input_when_both_present() {
+        // Precedence is load-bearing: the selected object is both gated and
+        // echoed back as updatedInput, so legacy `tool_input` must win.
+        let input = json!({
+            "tool_name": "Bash",
+            "tool_input": { "command": "git status" },
+            "input": { "command": "git log" }
+        })
+        .to_string();
+        let result = run_claude_inner(&input).expect("rewrite expected");
+        let v: Value = serde_json::from_str(&result).expect("valid hook JSON");
+        assert_eq!(
+            v["hookSpecificOutput"]["updatedInput"]["command"],
+            "rtk git status"
+        );
+    }
+
+    #[test]
     fn test_claude_passthrough_no_output() {
         assert!(run_claude_inner(&claude_input("htop")).is_none());
     }
