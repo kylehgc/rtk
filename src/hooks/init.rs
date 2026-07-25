@@ -7120,6 +7120,30 @@ mod tests {
     }
 
     #[test]
+    fn test_patch_settings_json_bom_plus_invalid_json_still_errors() {
+        // Stripping the BOM must not mask genuinely broken JSON: the
+        // parse-error context has to survive so the user gets blamed for
+        // the right thing.
+        let tmp = TempDir::new().unwrap();
+        with_claude_dir_override(&tmp, |claude_dir| {
+            let settings = claude_dir.join(SETTINGS_JSON);
+            fs::write(&settings, "\u{feff}{not valid json").unwrap();
+
+            let result = patch_settings_json_command(
+                CLAUDE_HOOK_COMMAND,
+                PatchMode::Auto,
+                false,
+                InitContext::default(),
+            );
+            let err = result.expect_err("invalid JSON must still fail");
+            assert!(
+                err.to_string().contains("Failed to parse"),
+                "error must carry the parse context, got: {err:#}"
+            );
+        });
+    }
+
+    #[test]
     fn test_patch_settings_json_bom_only_file() {
         // U+FEFF is not whitespace, so the `content.trim().is_empty()`
         // empty-file guard does not catch a BOM-only file.

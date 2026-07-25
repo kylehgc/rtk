@@ -418,7 +418,7 @@ fn composer_bin_dirs_from(env_bin_dir: Option<&str>, composer_json: Option<&str>
 }
 
 fn read_composer_bin_dir(composer_json: &str) -> Option<PathBuf> {
-    let parsed: Value = serde_json::from_str(composer_json).ok()?;
+    let parsed: Value = serde_json::from_str(strip_leading_bom(composer_json)).ok()?;
     let bin_dir = parsed.get("config")?.get("bin-dir")?.as_str()?.trim();
     if bin_dir.is_empty() {
         None
