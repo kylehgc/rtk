@@ -7,6 +7,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
+use crate::core::utils::strip_leading_bom;
 use crate::hooks::constants::{
     CONFIG_DIR, COPILOT_HOME_ENV, COPILOT_HOOK_FILE, COPILOT_INSTRUCTIONS_FILE, COPILOT_USER_DIR,
     CURSOR_DIR, GEMINI_DIR, GITHUB_DIR, OPENCODE_PLUGIN_FILE, OPENCODE_SUBDIR, PLUGIN_SUBDIR,
@@ -606,12 +607,13 @@ fn remove_hook_from_settings(ctx: InitContext) -> Result<bool> {
 
     let content = fs::read_to_string(&settings_path)
         .with_context(|| format!("Failed to read {}", settings_path.display()))?;
+    let content = strip_leading_bom(&content);
 
     if content.trim().is_empty() {
         return Ok(false);
     }
 
-    let mut root: serde_json::Value = serde_json::from_str(&content)
+    let mut root: serde_json::Value = serde_json::from_str(content)
         .with_context(|| format!("Failed to parse {} as JSON", settings_path.display()))?;
 
     let removed = remove_hook_from_json(&mut root);
@@ -976,11 +978,12 @@ fn patch_settings_json_command(
     let mut root = if settings_path.exists() {
         let content = fs::read_to_string(&settings_path)
             .with_context(|| format!("Failed to read {}", settings_path.display()))?;
+        let content = strip_leading_bom(&content);
 
         if content.trim().is_empty() {
             serde_json::json!({})
         } else {
-            serde_json::from_str(&content)
+            serde_json::from_str(content)
                 .with_context(|| format!("Failed to parse {} as JSON", settings_path.display()))?
         }
     } else {
@@ -1359,11 +1362,12 @@ fn remove_legacy_settings_entries(ctx: InitContext) -> Result<()> {
 
     let content = fs::read_to_string(&settings_path)
         .with_context(|| format!("Failed to read {}", settings_path.display()))?;
+    let content = strip_leading_bom(&content);
     if content.trim().is_empty() {
         return Ok(());
     }
 
-    let mut root: serde_json::Value = serde_json::from_str(&content)
+    let mut root: serde_json::Value = serde_json::from_str(content)
         .with_context(|| format!("Failed to parse {}", settings_path.display()))?;
 
     if !remove_legacy_hook_entries_from_json(&mut root) {
@@ -3013,10 +3017,11 @@ fn read_droid_json(path: &Path) -> Result<Option<serde_json::Value>> {
     }
     let content =
         fs::read_to_string(path).with_context(|| format!("Failed to read {}", path.display()))?;
+    let content = strip_leading_bom(&content);
     if content.trim().is_empty() {
         return Ok(Some(serde_json::json!({})));
     }
-    serde_json::from_str(&content)
+    serde_json::from_str(content)
         .map(Some)
         .with_context(|| format!("Failed to parse {} as JSON", path.display()))
 }
@@ -3677,10 +3682,11 @@ fn patch_cursor_hooks_json(path: &Path, ctx: InitContext) -> Result<bool> {
     let mut root = if path.exists() {
         let content = fs::read_to_string(path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
+        let content = strip_leading_bom(&content);
         if content.trim().is_empty() {
             serde_json::json!({ "version": 1 })
         } else {
-            serde_json::from_str(&content)
+            serde_json::from_str(content)
                 .with_context(|| format!("Failed to parse {} as JSON", path.display()))?
         }
     } else {
@@ -3788,11 +3794,12 @@ fn remove_legacy_cursor_hooks_json_entries(path: &Path, ctx: InitContext) -> Res
 
     let content =
         fs::read_to_string(path).with_context(|| format!("Failed to read {}", path.display()))?;
+    let content = strip_leading_bom(&content);
     if content.trim().is_empty() {
         return Ok(());
     }
 
-    let mut root: serde_json::Value = serde_json::from_str(&content)
+    let mut root: serde_json::Value = serde_json::from_str(content)
         .with_context(|| format!("Failed to parse {}", path.display()))?;
 
     if !remove_legacy_cursor_hook_entries_from_json(&mut root) {
@@ -3869,9 +3876,10 @@ fn remove_cursor_hooks(ctx: InitContext) -> Result<Vec<String>> {
     if hooks_json_path.exists() {
         let content = fs::read_to_string(&hooks_json_path)
             .with_context(|| format!("Failed to read {}", hooks_json_path.display()))?;
+        let content = strip_leading_bom(&content);
 
         if !content.trim().is_empty() {
-            if let Ok(mut root) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Ok(mut root) = serde_json::from_str::<serde_json::Value>(content) {
                 if remove_cursor_hook_from_json(&mut root) {
                     if dry_run {
                         println!(
@@ -3945,7 +3953,7 @@ fn show_claude_config() -> Result<()> {
     let settings_path = claude_dir.join(SETTINGS_JSON);
     let binary_hook_registered = if settings_path.exists() {
         let content = fs::read_to_string(&settings_path).unwrap_or_default();
-        if let Ok(root) = serde_json::from_str::<serde_json::Value>(&content) {
+        if let Ok(root) = serde_json::from_str::<serde_json::Value>(strip_leading_bom(&content)) {
             hook_already_present(&root, CLAUDE_HOOK_COMMAND)
         } else {
             false
@@ -4065,8 +4073,9 @@ fn show_claude_config() -> Result<()> {
     // Check settings.json (detailed status)
     if settings_path.exists() {
         let content = fs::read_to_string(&settings_path)?;
+        let content = strip_leading_bom(&content);
         if !content.trim().is_empty() {
-            if let Ok(root) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Ok(root) = serde_json::from_str::<serde_json::Value>(content) {
                 if all_hook_matchers_present(&root, CLAUDE_HOOK_COMMAND) {
                     println!("[ok] settings.json: RTK hook configured");
                 } else if hook_already_present(&root, CLAUDE_HOOK_COMMAND) {
@@ -4116,7 +4125,8 @@ fn show_claude_config() -> Result<()> {
         // Check for binary command in hooks.json first
         let cursor_binary_registered = if cursor_hooks_json.exists() {
             let content = fs::read_to_string(&cursor_hooks_json).unwrap_or_default();
-            if let Ok(root) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Ok(root) = serde_json::from_str::<serde_json::Value>(strip_leading_bom(&content))
+            {
                 cursor_hook_already_present(&root)
             } else {
                 false
@@ -4338,7 +4348,7 @@ fn patch_gemini_settings(
     let mut settings: serde_json::Value = if settings_path.exists() {
         let content = fs::read_to_string(&settings_path)
             .with_context(|| format!("Failed to read {}", settings_path.display()))?;
-        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+        serde_json::from_str(strip_leading_bom(&content)).unwrap_or(serde_json::json!({}))
     } else {
         serde_json::json!({})
     };
@@ -4480,7 +4490,9 @@ fn uninstall_gemini(ctx: InitContext) -> Result<Vec<String>> {
     let settings_path = gemini_dir.join(SETTINGS_JSON);
     if settings_path.exists() {
         let content = fs::read_to_string(&settings_path)?;
-        if let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&content) {
+        if let Ok(mut settings) =
+            serde_json::from_str::<serde_json::Value>(strip_leading_bom(&content))
+        {
             let bt_pointer = format!("/hooks/{}", BEFORE_TOOL_KEY);
             if let Some(arr) = settings
                 .pointer_mut(&bt_pointer)
@@ -7073,6 +7085,59 @@ mod tests {
             assert!(
                 content.contains(CLAUDE_HOOK_COMMAND),
                 "settings.json must contain hook command"
+            );
+        });
+    }
+
+    #[test]
+    fn test_patch_settings_json_tolerates_utf8_bom() {
+        let tmp = TempDir::new().unwrap();
+        with_claude_dir_override(&tmp, |claude_dir| {
+            // Notepad and PowerShell 5.1 `Out-File -Encoding utf8` prepend a BOM.
+            let settings = claude_dir.join(SETTINGS_JSON);
+            fs::write(&settings, "\u{feff}{\"foo\": 1}").unwrap();
+
+            let result = patch_settings_json_command(
+                CLAUDE_HOOK_COMMAND,
+                PatchMode::Auto,
+                false,
+                InitContext::default(),
+            );
+            assert!(
+                result.is_ok(),
+                "BOM-prefixed settings.json must not abort init: {:?}",
+                result.err()
+            );
+
+            let content = fs::read_to_string(&settings).unwrap();
+            let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+            assert_eq!(v["foo"], 1, "existing keys must survive the patch");
+            assert!(
+                content.contains(CLAUDE_HOOK_COMMAND),
+                "hook must be installed"
+            );
+        });
+    }
+
+    #[test]
+    fn test_patch_settings_json_bom_only_file() {
+        // U+FEFF is not whitespace, so the `content.trim().is_empty()`
+        // empty-file guard does not catch a BOM-only file.
+        let tmp = TempDir::new().unwrap();
+        with_claude_dir_override(&tmp, |claude_dir| {
+            let settings = claude_dir.join(SETTINGS_JSON);
+            fs::write(&settings, "\u{feff}").unwrap();
+
+            let result = patch_settings_json_command(
+                CLAUDE_HOOK_COMMAND,
+                PatchMode::Auto,
+                false,
+                InitContext::default(),
+            );
+            assert!(
+                result.is_ok(),
+                "BOM-only settings.json must be treated as empty: {:?}",
+                result.err()
             );
         });
     }

@@ -863,6 +863,15 @@ mod tests {
     }
 
     #[test]
+    fn test_toml_parse_tolerates_utf8_bom() {
+        // Hand-edited filter files on Windows often carry a BOM, which the
+        // toml crate rejects.
+        let bom = "\u{feff}schema_version = 1\n[filters.a]\nmatch_command = \"^a\"\n";
+        assert!(filter_parse_error(bom).is_none());
+        assert_eq!(match_patterns_in(bom), vec!["^a".to_string()]);
+    }
+
+    #[test]
     fn test_is_rtk_reserved_command() {
         assert!(is_rtk_reserved_command("git"));
         assert!(is_rtk_reserved_command("cargo"));

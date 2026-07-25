@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::io::{self, Read, Write};
 
+use crate::core::utils::strip_leading_bom;
 use crate::discover::registry::{has_heredoc, rewrite_command};
 
 const STDIN_CAP: usize = 1_048_576; // 1 MiB
@@ -444,18 +445,6 @@ fn run_claude_inner(input: &str) -> Option<String> {
 }
 
 // ── Cursor native hook ─────────────────────────────────────────
-
-/// Cursor on Windows ships hook payloads with one or more leading
-/// UTF-8 BOMs (`EF BB BF`, sometimes doubled), which serde_json
-/// refuses to parse. Strip them defensively so the rewrite path keeps
-/// working instead of silently returning `{}`.
-fn strip_leading_bom(input: &str) -> &str {
-    let mut s = input;
-    while let Some(rest) = s.strip_prefix('\u{feff}') {
-        s = rest;
-    }
-    s
-}
 
 /// Run the Cursor Agent hook natively.
 pub fn run_cursor() -> Result<()> {
@@ -1303,19 +1292,6 @@ mod tests {
         assert_eq!(v["continue"], true);
         assert_eq!(v["permission"], "allow");
         assert_eq!(v["updated_input"]["command"], "rtk git status");
-    }
-
-    #[test]
-    fn test_strip_leading_bom_helper() {
-        // Direct unit test on the helper so future refactors can't
-        // regress the loop semantics without a clear failure signal.
-        assert_eq!(strip_leading_bom(""), "");
-        assert_eq!(strip_leading_bom("hello"), "hello");
-        assert_eq!(strip_leading_bom("\u{feff}hello"), "hello");
-        assert_eq!(strip_leading_bom("\u{feff}\u{feff}hello"), "hello");
-        assert_eq!(strip_leading_bom("\u{feff}\u{feff}\u{feff}hello"), "hello");
-        // BOM in the middle is preserved (not "leading").
-        assert_eq!(strip_leading_bom("a\u{feff}b"), "a\u{feff}b");
     }
 
     // --- Audit logging ---
