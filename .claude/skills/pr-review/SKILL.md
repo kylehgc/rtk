@@ -142,7 +142,7 @@ Merge #<num> ?
 #### Étape E — Merger (si validé)
 
 ```bash
-gh pr merge <num> --merge --squash
+gh pr merge <num> --merge
 ```
 
 Confirmer immédiatement : `Merged #<num>. ✓`
