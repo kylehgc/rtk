@@ -14,6 +14,8 @@ allowed-tools:
   - Grep
   - Glob
   - Skill
+  - Agent
+  - Task
   - AskUserQuestion
 effort: high
 tags: [workflow, fork, adoption, cherry-pick, upstream, pr, rtk]
@@ -216,14 +218,7 @@ native target cannot link — build with the x86_64 **host** toolchain, from Pow
 Bash, where coreutils `link` shadows MSVC's):
 
 ```powershell
-$env:RUSTUP_TOOLCHAIN  = "stable-x86_64-pc-windows-msvc"
-$env:CARGO_BUILD_TARGET = "x86_64-pc-windows-msvc"
-$msvc = "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Tools\MSVC\14.50.35717"
-$sdk  = "C:\Program Files (x86)\Windows Kits\10"; $sdkv = "10.0.26100.0"
-# Git usr\bin appended LAST: core::stream tests spawn sh/cat/true, but it must not
-# shadow System32 find/sort.
-$env:PATH = "$env:USERPROFILE\.cargo\bin;$msvc\bin\Hostarm64\x64;$env:PATH;C:\Program Files\Git\usr\bin"
-$env:LIB  = "$msvc\lib\x64;$sdk\Lib\$sdkv\um\x64;$sdk\Lib\$sdkv\ucrt\x64"
+. .\scripts\win-dev-env.ps1     # x64 host toolchain env; the script documents why
 ```
 
 A failing test is a finding, not an obstacle. Read it before changing it: if a pre-existing
@@ -291,10 +286,11 @@ reporter noticed three hours later that upstream still had nothing.
 
 ```bash
 git fetch upstream
-git checkout -b upstream/<slug> upstream/develop
+git checkout -b submit/<slug> upstream/develop   # not upstream/<slug>: that prefix collides
+                                                 # with the upstream/* remote-tracking namespace
 git cherry-pick <sha>...              # ONLY the commits for this one change
 # quality gate on THIS branch too
-git push -u origin upstream/<slug>
+git push -u origin submit/<slug>
 gh pr create --repo rtk-ai/rtk --base develop --title "..." --body-file <file>
 ```
 
@@ -329,7 +325,7 @@ Inherited skills written for upstream maintainers, and what they do here:
 
 | Skill | Trap |
 |---|---|
-| `pr-review` | Merge step is `gh pr merge --merge --squash` — conflicting flags, and squash **destroys cherry-pick authorship**. It also hardcodes `gh api repos/rtk-ai/rtk/...`, so it reads upstream's reviews while `gh pr list` reads the fork. Do not use it for fork PRs. |
+| `pr-review` | Hardcodes `gh api repos/rtk-ai/rtk/...`, so it reads upstream's reviews while `gh pr list` reads the fork. Do not use it for fork PRs. (Its merge step used to be `--merge --squash` — conflicting flags, squash **destroys cherry-pick authorship** — defused to `--merge` in PR #60.) |
 | `pr-triage` | Phase 2 spawns `subagent_type: code-reviewer` and references a `backend-architect` skill. **Neither exists in this repo.** That phase fails. |
 | `issue-triage`, `pr-triage`, `rtk-triage` | Sweep the *current* repo only. Fine for the fork's backlog; they cannot crawl upstream, which is what the fork's Triage means. |
 | `ship` | Pushes to `origin main`. This fork's mainline is `develop`; there is no `main`. Also assumes upstream's release-please and working CI. |
