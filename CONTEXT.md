@@ -2,6 +2,8 @@
 
 This fork (kylehgc/rtk) tracks upstream rtk-ai/rtk and adopts solid community fixes that upstream is too slow to merge, plus original fixes. This glossary covers the fork-maintenance process.
 
+The `/do-issue` skill (`.claude/skills/do-issue/`) is this document's executable form: it drives one open fork issue from ticket to merged PR along the flow defined below. This file stays the authority — where the two disagree, fix the skill.
+
 ## Language
 
 **Upstream**:
