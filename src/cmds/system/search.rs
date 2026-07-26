@@ -284,6 +284,23 @@ fn strip_rg_replace(flags: &[String]) -> Vec<String> {
             i += 1;
             continue;
         }
+        // A value-taking flag's value is the next token and is NOT a flag, even
+        // when it starts with `-` (`-g -r*.rs`). Copy both through untouched, or
+        // the letter-strip below would rewrite the value (`-r*.rs` -> `-*.s`).
+        // extract_pattern_path emits value-taking short flags alone as `-X`.
+        let takes_value = VALUE_FLAGS_LONG.contains(&f.as_str())
+            || f.len() == 2
+                && f.starts_with('-')
+                && VALUE_FLAGS_SHORT.contains(&f.as_bytes()[1]);
+        if takes_value {
+            out.push(f.clone());
+            if i + 1 < flags.len() {
+                out.push(flags[i + 1].clone());
+            }
+            i += 2;
+            continue;
+        }
+
         // Short cluster (`-XrYZ`): strip r/R, keep the remaining boolean letters.
         if f.starts_with('-') && !f.starts_with("--") && f.len() > 1 {
             let cleaned: String = f[1..].chars().filter(|c| *c != 'r' && *c != 'R').collect();
@@ -1699,6 +1716,23 @@ mod tests {
         assert_eq!(s(&["-i", "-n"]), vec!["-i", "-n"]);
         assert_eq!(s(&["-g", "*.rs"]), vec!["-g", "*.rs"]);
         assert_eq!(s(&["-A", "2"]), vec!["-A", "2"]);
+    }
+
+    #[test]
+    fn test_strip_rg_replace_spares_value_tokens_that_look_like_flags() {
+        // A value-taking flag's value is a separate token (extract_pattern_path
+        // pushes `-g` then the glob). Most values don't start with `-`, so the
+        // cluster branch never sees them — but `--glob=-r*.rs` style values, or
+        // any value beginning with a dash, land in the same list and would be
+        // letter-stripped as if they were a flag cluster (`-r*.rs` -> `-*.s`),
+        // silently changing which files are searched.
+        assert_eq!(s(&["-g", "-r*.rs"]), vec!["-g", "-r*.rs"]);
+        assert_eq!(s(&["--glob", "-recursive*"]), vec!["--glob", "-recursive*"]);
+        assert_eq!(s(&["-t", "-rust"]), vec!["-t", "-rust"]);
+        // Still strips a real -r sitting next to such a flag.
+        assert_eq!(s(&["-r", "-g", "-r*.rs"]), vec!["-g", "-r*.rs"]);
+        // A value-taking flag with no value (end of args) must not panic.
+        assert_eq!(s(&["-g"]), vec!["-g"]);
     }
 
     // Full-path regression for the reported bug: `rtk rg -rn class file`.
