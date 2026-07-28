@@ -4,16 +4,17 @@ use crate::core::runner;
 use crate::core::stream::{BlockHandler, BlockStreamFilter};
 use crate::core::utils::{resolved_command, strip_ansi, tool_exists, truncate};
 use anyhow::Result;
-use lazy_static::lazy_static;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
+use std::sync::LazyLock;
 
-lazy_static! {
-    static ref TSC_ERROR: Regex =
-        Regex::new(r"^(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+(TS\d+):\s+(.+)$").unwrap();
-    static ref TSC_PRETTY_ERROR: Regex =
-        Regex::new(r"^(.+?):(\d+):(\d+)\s+-\s+(error|warning)\s+(TS\d+):\s+(.+)$").unwrap();
-}
+static TSC_ERROR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+(TS\d+):\s+(.+)$").unwrap()
+});
+
+static TSC_PRETTY_ERROR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(.+?):(\d+):(\d+)\s+-\s+(error|warning)\s+(TS\d+):\s+(.+)$").unwrap()
+});
 
 struct TsDiagnostic {
     file: String,
