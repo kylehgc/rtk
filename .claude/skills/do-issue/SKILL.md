@@ -5,7 +5,8 @@ description: >
   workflow in CONTEXT.md: Sync, classify Adoption vs Original fix, investigate deeply,
   cherry-pick preserving authorship, repro before/after, quality gate, fork PR, merge.
   Enforces the Upstream PR obligation for Original fixes.
-  Args: an issue number (e.g. "45"), or no arg to pick from the open backlog.
+  Args: an issue number (e.g. "45"), or no arg — with no arg it picks the next issue from the
+  open backlog itself by the Phase 1 ranking and says why, rather than asking.
 allowed-tools:
   - Bash
   - Read
@@ -70,12 +71,64 @@ git merge upstream/develop --no-edit
   branching; kick it off in the background while you read the ticket.
 - **Conflicted merge** → this is a **Conflicted Sync**. Stop. It goes through a topic branch and
   its own fork PR, never a direct commit to `develop`. The PR must record which fork code was
-  removed or superseded, why the upstream version won, and any fork tests updated. See
+  removed or superseded and any fork tests updated. See
   `claudedocs/sync-conflict-2026-07-23.md` for the first case.
+
+🚨 **Resolving a conflict: upstream wins. Always.** The fork is *additive* to upstream — it adds
+what upstream lacks, it does not hold a different opinion about what upstream already has.
+
+- Upstream covers it at all — code, test, or even a comment? Take **upstream's, verbatim**. Don't
+  keep the fork's wording, don't blend the two, don't graft the fork's comment onto upstream's
+  code. "The fork's read better" is not a reason. Divergence for its own sake is drift, and drift
+  is what makes the next sync expensive.
+- Only genuinely **additive** fork code survives — a capability upstream does not have *at all*.
+  Prove it before keeping anything:
+
+  ```bash
+  git show upstream/develop:<file> | grep -n '<symbol>'   # blank => genuinely fork-only
+  ```
+
+  A fork fix upstream has since solved its own way is **not** additive. It is a duplicate. It goes.
+- Surviving additive code adopts upstream's **current style**, even if the fork's still compiles
+  (upstream migrated `lazy_static!` → `LazyLock`; the fork's kept feature migrates with it).
+
+This is easy to get backwards. On 2026-07-28 two resolutions kept the fork's comment and test
+wording as "additive", when upstream already had `run_in_terminal` handling — they were
+duplicates, and the merge had to be corrected by `e928f0f`. Run the `git show` check *first*.
 
 ---
 
-## Phase 1 — Read the ticket, classify it
+## Phase 1 — Pick the ticket, read it, classify it
+
+### No issue number given? Pick one — don't ask
+
+With no arg, choose the issue yourself. Announce the pick and the one-line reason before
+starting, so it can be vetoed cheaply; do not stop and wait for an answer.
+
+```bash
+gh issue list --repo kylehgc/rtk --state open --limit 50
+gh pr list   --repo kylehgc/rtk --state open --limit 50   # skip anything already in flight
+```
+
+Rank by what the fork exists to protect, highest first:
+
+1. **Anything blocking other work** — a conflicted sync, a broken hook, a failing quality gate.
+   Nothing else can land cleanly behind it.
+2. **Silent output corruption.** rtk sits between the model and the truth: a filter that drops
+   or mangles output is strictly worse than no filter, because the damage is invisible at the
+   call site. Outrank crashes — a crash is self-reporting, corruption is not.
+3. **Wrong-command / wrong-routing bugs** — rtk running something other than what was asked.
+4. **Adoptions whose upstream PR still applies** — cheap, and authorship is already preserved
+   upstream.
+5. **Everything else** — features, output polish, docs.
+
+Tie-breakers, in order: smaller blast radius first; an issue with a named upstream PR over one
+without (the diff already exists); older issue number over newer.
+
+Skip, and say why in one line: anything with an open fork PR already, anything whose upstream PR
+Phase 2 shows no longer applies, and anything needing a decision only the user can make.
+
+### Read it
 
 ```bash
 gh issue view <N> --repo kylehgc/rtk
@@ -173,6 +226,37 @@ code is poor — and say which in the PR.
 **Amendments** — anything the contributor's commit is missing (tests, a gap it doesn't cover) is
 a **separate fork-authored commit** on top. Never squash it into theirs. A PR needing more than
 amendments is not adopted: re-implement, reject, or open contributor outreach.
+
+### 🚨 Candidate doesn't hold up? Close it — do not repair it
+
+If the upstream PR is **wrong**, or its bug **won't reproduce** on current `develop`, stop. Don't
+fix it up and ship it anyway.
+
+```bash
+gh issue close <N> --repo kylehgc/rtk --comment "<what you ran, what you saw, PR left alone>"
+```
+
+Two triggers:
+
+- **Not reproducible** — the Phase 4 before-repro shows current behavior is already correct.
+  Upstream probably merged a different fix. (Phase 2a already warns: an open upstream PR is not
+  evidence its bug is unfixed.)
+- **Not correct** — the diff doesn't fix the bug, patches a symptom instead of the cause, or
+  regresses something else.
+
+Repairing it quietly turns an Adoption into an Original fix that still carries the contributor's
+name, hides that the fork now ships code upstream never validated, and picks up the Phase 7
+Upstream PR obligation without anyone choosing to. If the bug is real and the fix is wrong,
+that's a **new Original fix with its own ticket** — not a rescue of this one.
+
+The closing note records what you ran, what you saw, and that the upstream PR was left untouched.
+**Never edit or comment on the upstream PR while declining** — that's Contributor outreach, a
+separate and deliberate decision.
+
+**Partial decline is allowed and often right**: adopt the part that reproduces, drop the part that
+doesn't, and say so in the PR. Upstream #2573 went this way — its `git.rs` half fixed two live
+defects, its `registry.rs` half chased a symptom upstream had already solved via `RewriteContext`.
+Took the first, dropped the second (fork PR #68).
 
 ### Original fix path
 
