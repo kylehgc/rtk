@@ -21,7 +21,15 @@ A `git merge upstream/develop` into the fork's mainline. Never a rebase — publ
 _Avoid_: rebase, update
 
 **Conflicted Sync**:
-A Sync whose merge hits conflicts, meaning fork work and upstream work collided — usually because upstream shipped its own solution to a problem the fork had already patched. Resolution happens on a topic branch and lands via a fork PR, never as a direct commit to `develop`. The PR description must record: which fork code was removed or superseded, why the upstream version won (or why the fork's was kept), and any fork tests updated to match new upstream behavior. This keeps the removal of contributed work reviewable and attributable — contributor-friendly for the fork, and an honest record of where upstream superseded us. First instance: merge `e32bb38` (2026-07-23, resolved pre-policy, direct to `develop`) — see `claudedocs/sync-conflict-2026-07-23.md`.
+A Sync whose merge hits conflicts, meaning fork work and upstream work collided — usually because upstream shipped its own solution to a problem the fork had already patched. Resolution happens on a topic branch and lands via a fork PR, never as a direct commit to `develop`. The PR description must record: which fork code was removed or superseded, and any fork tests updated to match new upstream behavior. This keeps the removal of contributed work reviewable and attributable — contributor-friendly for the fork, and an honest record of where upstream superseded us. First instance: merge `e32bb38` (2026-07-23, resolved pre-policy, direct to `develop`) — see `claudedocs/sync-conflict-2026-07-23.md`.
+
+**Resolution rule — the fork is additive to upstream.** In any sync conflict, **upstream's version wins.** The fork exists to add what upstream lacks, never to hold a different opinion about what upstream already has. So:
+
+- Upstream covers it at all — code, test, or comment? Take upstream's, verbatim. Do not keep the fork's wording, do not merge the two, do not graft the fork's comment onto upstream's code. "The fork's was better" is not a reason; divergence for its own sake is drift, and drift is what makes every later sync more expensive.
+- Only genuinely **additive** fork code survives a conflict — a capability upstream does not have at all. Before keeping any fork side, prove upstream lacks it (`git show upstream/develop:<file> | grep <symbol>`). A fork fix that upstream has since solved differently is *not* additive; it is a duplicate, and it goes.
+- Additive code adopts upstream's current style even when the fork's still compiles. If upstream migrated the idiom, the surviving fork feature migrates with it.
+
+Worked example: merge `e928f0f` (2026-07-28) reverted two resolutions from the merge commit before it, which had kept the fork's comment and test wording on the premise that the fork's `run_in_terminal` handling was additive. Upstream already had it. They were duplicates, and upstream's went back in verbatim.
 
 **Candidate PR**:
 An open upstream PR that triage has flagged as potentially worth adopting, but not yet vetted.
@@ -35,6 +43,18 @@ The process of taking a Candidate PR into the fork: cherry-pick its commits, ver
 
 **Amendment**:
 A fork-authored commit added on top of a cherry-picked contribution to complete it — missing tests, small fixes. Always a separate commit; never squashed into the contributor's commit. A PR needing more than amendments is not adopted — it's re-implemented, rejected, or queued for Contributor outreach.
+
+**Declined adoption**:
+An adoption abandoned because the candidate PR does not hold up. **Do not repair it.** If the fix is incorrect, or its bug cannot be reproduced on current `develop`, stop and close the fork ticket with a note recording what was checked. Two triggers:
+
+- **Not reproducible** — the repro-before step shows current behavior is already correct. Upstream likely merged a different fix, or the report was wrong. (See Triage: an open upstream PR is not evidence its bug is unfixed.)
+- **Not correct** — the diff does not actually fix the bug, fixes a symptom rather than the cause, or regresses something else.
+
+Repairing a broken candidate silently converts an Adoption into an Original fix while still crediting the contributor, hides that the fork is now carrying code upstream never validated, and takes on the Upstream PR obligation without anyone deciding to. If the bug is real and the fix is wrong, that is a fresh Original fix with its own ticket — not a rescue of this one.
+
+The closing note records: what was run to check, what the result was, and the upstream PR left untouched. Never edit or comment on the upstream PR itself as part of declining — that is Contributor outreach, and it is a separate, deliberate decision.
+
+A candidate can also be **partially** declined: adopt the part that reproduces, drop the part that does not, and say so in the PR. First instance: upstream #2573 (2026-07-28), whose `git.rs` half fixed two reproducible defects while its `registry.rs` half addressed a symptom upstream had already solved via `RewriteContext` — adopted the first, dropped the second, evidence in fork PR #68.
 
 **Triage**:
 Crawling upstream's open PRs to classify each as a Candidate or a pass, bug fixes ranked ahead of features. Before a Candidate is filed as an adoption ticket, verify the bug is real and still present on current develop (code inspection or repro) — an open upstream PR is not evidence its bug is unfixed; upstream may have merged a different fix (see triage 2026-07-17 verification sweep: #2263, #937).
