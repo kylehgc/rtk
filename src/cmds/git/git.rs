@@ -83,7 +83,11 @@ fn status_args_request_machine_output(args: &[String]) -> bool {
 
 fn log_args_request_machine_output(args: &[String]) -> bool {
     args.iter().enumerate().any(|(idx, arg)| {
-        arg == "--format"
+        // `-z` NUL-delimits records for programmatic consumers, independently of
+        // any --format/--pretty flag: `git log -z --name-only` is machine output
+        // with no custom format at all.
+        arg == "-z"
+            || arg == "--format"
             || arg.starts_with("--format=")
             || arg.starts_with("--pretty=format:")
             || arg.starts_with("--pretty=tformat:")
@@ -99,12 +103,13 @@ fn diff_args_request_machine_output(args: &[String]) -> bool {
         matches!(
             arg.as_str(),
             "-z"
-                | "--no-color"
                 | "--name-only"
                 | "--name-status"
                 | "--numstat"
                 | "--raw"
-                | "--word-porcelain"
+                // `--word-diff=porcelain` is the machine-readable word-diff; the
+                // plain/color variants are for humans, so they stay compacted.
+                | "--word-diff=porcelain"
         )
     })
 }
@@ -498,11 +503,9 @@ fn run_log(
 
         print!("{}", result.stdout);
 
-        timer.track(
+        timer.track_passthrough(
             &format!("git log {}", args.join(" ")),
             &format!("rtk git log {} (passthrough)", args.join(" ")),
-            &result.stdout,
-            &result.stdout,
         );
 
         return Ok(0);
@@ -930,11 +933,9 @@ fn run_status(args: &[String], verbose: u8, global_args: &[String]) -> Result<i3
             if !result.stderr.trim().is_empty() {
                 eprint!("{}", result.stderr);
             }
-            timer.track(
+            timer.track_passthrough(
                 &format!("git status {}", args.join(" ")),
                 &format!("rtk git status {} (passthrough)", args.join(" ")),
-                &result.stdout,
-                &result.stdout,
             );
             return Ok(result.exit_code);
         }
@@ -944,11 +945,9 @@ fn run_status(args: &[String], verbose: u8, global_args: &[String]) -> Result<i3
         }
         print!("{}", result.stdout);
 
-        timer.track(
+        timer.track_passthrough(
             &format!("git status {}", args.join(" ")),
             &format!("rtk git status {} (passthrough)", args.join(" ")),
-            &result.stdout,
-            &result.stdout,
         );
 
         return Ok(0);
@@ -2298,18 +2297,59 @@ mod tests {
     }
 
     #[test]
+    fn test_git_log_z_is_machine_output_without_format_flag() {
+        // `git log -z --name-only` is machine output with no custom format at all.
+        // Before this, -z fell to the compact path, which injects its own
+        // --pretty=format:<MARKER>, -10 and --no-merges and then filters —
+        // exactly the corruption the machine-output guard exists to prevent.
+        assert!(log_args_request_machine_output(&["-z".to_string()]));
+        assert!(log_args_request_machine_output(&[
+            "-z".to_string(),
+            "--name-only".to_string()
+        ]));
+    }
+
+    #[test]
     fn test_git_diff_machine_output_args_passthrough() {
         for args in [
             vec!["--name-only".to_string()],
             vec!["--name-status".to_string()],
             vec!["--numstat".to_string()],
             vec!["--raw".to_string()],
-            vec!["--word-porcelain".to_string()],
+            vec!["--word-diff=porcelain".to_string()],
             vec!["-z".to_string(), "--name-only".to_string()],
         ] {
             assert!(diff_args_request_machine_output(&args), "{args:?}");
         }
         assert!(!diff_args_request_machine_output(&[]));
+    }
+
+    #[test]
+    fn test_git_diff_word_diff_only_porcelain_is_machine_output() {
+        // `--word-porcelain` is not a git flag at all (`git diff --word-porcelain`
+        // exits 129); the real machine-readable spelling is `--word-diff=porcelain`.
+        assert!(!diff_args_request_machine_output(&[
+            "--word-porcelain".to_string()
+        ]));
+        assert!(diff_args_request_machine_output(&[
+            "--word-diff=porcelain".to_string()
+        ]));
+        // The human-facing word-diff modes must stay compacted.
+        for human in ["--word-diff=plain", "--word-diff=color", "--word-diff"] {
+            assert!(
+                !diff_args_request_machine_output(&[human.to_string()]),
+                "{human} is for humans and must stay compacted"
+            );
+        }
+    }
+
+    #[test]
+    fn test_git_diff_no_color_is_not_machine_output() {
+        // --no-color only suppresses ANSI; it says nothing about the output format,
+        // so treating it as machine output would disable compaction for free.
+        assert!(!diff_args_request_machine_output(&[
+            "--no-color".to_string()
+        ]));
     }
 
     #[test]
