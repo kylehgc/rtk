@@ -5,7 +5,8 @@ description: >
   workflow in CONTEXT.md: Sync, classify Adoption vs Original fix, investigate deeply,
   cherry-pick preserving authorship, repro before/after, quality gate, fork PR, merge.
   Enforces the Upstream PR obligation for Original fixes.
-  Args: an issue number (e.g. "45"), or no arg to pick from the open backlog.
+  Args: an issue number (e.g. "45"), or no arg — with no arg it picks the next issue from the
+  open backlog itself by the Phase 1 ranking and says why, rather than asking.
 allowed-tools:
   - Bash
   - Read
@@ -75,7 +76,37 @@ git merge upstream/develop --no-edit
 
 ---
 
-## Phase 1 — Read the ticket, classify it
+## Phase 1 — Pick the ticket, read it, classify it
+
+### No issue number given? Pick one — don't ask
+
+With no arg, choose the issue yourself. Announce the pick and the one-line reason before
+starting, so it can be vetoed cheaply; do not stop and wait for an answer.
+
+```bash
+gh issue list --repo kylehgc/rtk --state open --limit 50
+gh pr list   --repo kylehgc/rtk --state open --limit 50   # skip anything already in flight
+```
+
+Rank by what the fork exists to protect, highest first:
+
+1. **Anything blocking other work** — a conflicted sync, a broken hook, a failing quality gate.
+   Nothing else can land cleanly behind it.
+2. **Silent output corruption.** rtk sits between the model and the truth: a filter that drops
+   or mangles output is strictly worse than no filter, because the damage is invisible at the
+   call site. Outrank crashes — a crash is self-reporting, corruption is not.
+3. **Wrong-command / wrong-routing bugs** — rtk running something other than what was asked.
+4. **Adoptions whose upstream PR still applies** — cheap, and authorship is already preserved
+   upstream.
+5. **Everything else** — features, output polish, docs.
+
+Tie-breakers, in order: smaller blast radius first; an issue with a named upstream PR over one
+without (the diff already exists); older issue number over newer.
+
+Skip, and say why in one line: anything with an open fork PR already, anything whose upstream PR
+Phase 2 shows no longer applies, and anything needing a decision only the user can make.
+
+### Read it
 
 ```bash
 gh issue view <N> --repo kylehgc/rtk
