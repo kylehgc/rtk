@@ -89,8 +89,7 @@ fn detect_format(v: &Value) -> HookFormat {
     }
 
     // Copilot CLI: camelCase keys, toolArgs is a JSON-encoded string.
-    // The shell tool is "bash" on Unix and "powershell" on Windows;
-    // the IDE terminal integration names it "run_in_terminal" instead.
+    // The shell tool is "bash" on Unix and "powershell" on Windows.
     if let Some(tool_name) = v.get("toolName").and_then(|t| t.as_str()) {
         if matches!(tool_name, "bash" | "powershell" | "run_in_terminal") {
             if let Some(tool_args_str) = v.get("toolArgs").and_then(|t| t.as_str()) {
@@ -782,8 +781,6 @@ mod tests {
     #[test]
     fn test_detect_copilot_cli_powershell() {
         // Copilot CLI names its shell tool "powershell" on Windows, not "bash".
-        // Without this the payload falls through to PassThrough and only the
-        // Claude-compat PreToolUse entry answers, which prompts on every command.
         assert!(matches!(
             detect_format(&copilot_cli_input("powershell", "git status")),
             HookFormat::CopilotCli { .. }
