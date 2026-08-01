@@ -16,8 +16,15 @@ When a coding agent runs `cargo test`, `git log`, `npm install`, or `pytest`, th
 output goes straight into its context window — thousands of lines of progress bars,
 timestamps, and repetition, most of which the model cannot use. rtk sits in front of
 those commands, runs them for real, and passes back a filtered version that keeps the
-errors, the failures, and the diagnostics while dropping the noise. Typical reduction
-is 60–90% of bash output.
+errors, the failures, and the diagnostics while dropping the noise. Across rtk's own
+benchmark suite — 73 cases, run with [`scripts/benchmark.sh`](../scripts/benchmark.sh) —
+aggregate output came to **541,111 → 123,205 tokens, a 77% reduction**. Individual
+commands vary enormously: some are cut by 90%, and some are passed through untouched
+because filtering them would lose information or gain nothing.
+
+That is a measure of **bash output**, not of your bill, and rtk ships no tokenizer —
+it estimates tokens as bytes/4, so the ratios are sound and the absolute counts are
+approximate.
 
 It is a transparent proxy: `rtk cargo test` runs `cargo test`, exits with the same
 status code, and works for commands it has no specific filter for. A hook can rewrite

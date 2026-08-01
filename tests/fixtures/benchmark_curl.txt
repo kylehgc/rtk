@@ -1,0 +1,7 @@
+User-agent: *
+Disallow: /admin
+Disallow: /private
+Disallow: /internal
+Allow: /
+Crawl-delay: 10
+Sitemap: https://example.invalid/sitemap.xml
