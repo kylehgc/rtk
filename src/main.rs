@@ -317,7 +317,7 @@ enum Commands {
         // users routinely pass. A short option here shadows the native flag and
         // either crashes clap (`-l <pattern>` is not a `usize`) or silently
         // applies the wrong semantics, defeating the `extra_args` passthrough.
-        // Keep these long-only so native flags reach grep_cmd.rs. (Completes the
+        // Keep these long-only so native flags reach search.rs. (Completes the
         // `-v`/`-n`/pattern/path cleanup from 84616d1.)
         /// Max line length
         #[arg(long, default_value = "80")]
@@ -3683,7 +3683,7 @@ mod tests {
     // --- grep argument routing (clap layer) ---
     //
     // The `Grep` variant funnels the pattern, path, and every native grep/rg
-    // flag into a single `trailing_var_arg` slot so `src/cmds/system/grep_cmd.rs`
+    // flag into a single `trailing_var_arg` slot so `src/cmds/system/search.rs`
     // can parse them with full grep/rg semantics. Commit 84616d1
     // ("fix(grep): stabilize argument parsing") moved to this design but left
     // the struct's own short options `-l`/`-m`/`-t` in place, where they still
@@ -3712,7 +3712,7 @@ mod tests {
     #[test]
     fn test_grep_parse_combined_short_cluster() {
         // `-rn` is a native grep cluster (recursive + line-numbers); it must
-        // reach grep_cmd.rs intact, not be intercepted by clap.
+        // reach search.rs intact, not be intercepted by clap.
         assert_eq!(
             grep_extra_args(&["rtk", "grep", "-rn", "FOO", "src/"]).unwrap(),
             vec!["-rn", "FOO", "src/"]
@@ -3747,7 +3747,7 @@ mod tests {
         );
     }
 
-    // The fix: native `-l`/`-m`/`-t` must route to grep_cmd.rs, not be captured
+    // The fix: native `-l`/`-m`/`-t` must route to search.rs, not be captured
     // by the struct's own short options (max_len / max / file_type). These FAIL
     // before the fix — `-l` mis-binds to `max_len: usize` and clap rejects the
     // pattern; `-m`/`-t` silently swallow their value with the wrong semantics.
@@ -3763,7 +3763,7 @@ mod tests {
 
     #[test]
     fn test_grep_parse_max_count_m_forwarded() {
-        // Native grep `-m N` (max-count). The value `5` must reach grep_cmd.rs,
+        // Native grep `-m N` (max-count). The value `5` must reach search.rs,
         // not be eaten as rtk's `--max`.
         assert_eq!(
             grep_extra_args(&["rtk", "grep", "-m", "5", "FOO", "file"]).unwrap(),
@@ -3773,7 +3773,7 @@ mod tests {
 
     #[test]
     fn test_grep_parse_type_t_forwarded() {
-        // ripgrep `-t TYPE` (type filter). Must pass through to grep_cmd.rs,
+        // ripgrep `-t TYPE` (type filter). Must pass through to search.rs,
         // which already handles it, instead of binding to rtk's `--file-type`.
         assert_eq!(
             grep_extra_args(&["rtk", "grep", "-t", "rust", "FOO", "src/"]).unwrap(),
@@ -3841,7 +3841,7 @@ mod tests {
     #[test]
     fn test_grep_version_routes_to_extra_args() {
         // `--version` is not a subcommand flag (version isn't propagated), so it
-        // lands in extra_args and grep_cmd::run forwards it to rg --version.
+        // lands in extra_args and search::run forwards it to rg --version.
         assert_eq!(
             grep_extra_args(&["rtk", "grep", "--version"]).unwrap(),
             vec!["--version"]
