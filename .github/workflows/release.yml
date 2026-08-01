@@ -223,7 +223,10 @@ jobs:
   notify-discord:
     name: Notify Discord
     needs: [release]
-    if: ${{ !inputs.prerelease }}
+    # Repo guard: this job posts to rtk-ai's Discord and reads rtk-ai's releases.
+    # A fork must never announce its own build there, and without the secret it
+    # would fail the release run outright.
+    if: ${{ !inputs.prerelease && github.repository == 'rtk-ai/rtk' }}
     runs-on: ubuntu-latest
     steps:
       - name: Get version
@@ -260,7 +263,9 @@ jobs:
   homebrew:
     name: Update Homebrew formula
     needs: [release]
-    if: ${{ !inputs.prerelease }}
+    # Repo guard: this job writes Formula/rtk.rb into rtk-ai/homebrew-tap. A fork
+    # must never be able to push a formula into upstream's tap.
+    if: ${{ !inputs.prerelease && github.repository == 'rtk-ai/rtk' }}
     runs-on: ubuntu-latest
     steps:
       - name: Get version

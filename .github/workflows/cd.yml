@@ -15,10 +15,55 @@ permissions:
 
 jobs:
   # ═══════════════════════════════════════════════
+  # GATE: no release ships from a red build
+  # ═══════════════════════════════════════════════
+  #
+  # Fork Infrastructure (see CONTEXT.md). Implemented as a job rather than a
+  # workflow_run trigger so every `github.ref` condition below keeps working
+  # unchanged — workflow_run reports the default branch, not the pushed one.
+
+  ci-gate:
+    name: Require CI green
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for CI on this commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Manual dispatch is a deliberate human act and may target a commit CI
+          # never ran on. Exit 0 rather than skipping the job: a skipped `needs`
+          # would cascade and silently skip the release itself.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual dispatch — CI gate bypassed deliberately."
+            exit 0
+          fi
+
+          for _ in $(seq 1 60); do
+            state=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${GITHUB_SHA}" \
+              --jq '[.workflow_runs[] | select(.name == "CI")][0]
+                    | (.status // "absent") + ":" + (.conclusion // "pending")')
+            case "$state" in
+              completed:success)
+                echo "CI is green for ${GITHUB_SHA}."
+                exit 0 ;;
+              completed:*)
+                echo "::error::CI concluded '${state#completed:}' for ${GITHUB_SHA} — refusing to release."
+                exit 1 ;;
+              *)
+                echo "CI is ${state}; waiting..."
+                sleep 30 ;;
+            esac
+          done
+          echo "::error::Timed out after 30m waiting for CI on ${GITHUB_SHA}."
+          exit 1
+
+  # ═══════════════════════════════════════════════
   # DEVELOP PATH: Pre-release
   # ═══════════════════════════════════════════════
 
   pre-release:
+    needs: ci-gate
     if: >-
       github.ref == 'refs/heads/develop'
       || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/master')
@@ -34,12 +79,29 @@ jobs:
       - name: Compute version from commits like release please   
         id: tag
         run: |
-          LATEST_TAG=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname | grep -v '-' | head -1)
-          if [ -z "$LATEST_TAG" ]; then
-            echo "::error::No stable release tag found"
-            exit 1
+          # Fork Infrastructure (see CONTEXT.md). The fork numbers its releases on its
+          # own line starting at 0.1.0 and prefixes every tag with `fork-`, so its tags
+          # can never collide with upstream's in a clone that fetches both remotes.
+          if [ "$GITHUB_REPOSITORY" = "rtk-ai/rtk" ]; then
+            TAG_GLOB='v[0-9]*.[0-9]*.[0-9]*'
+            TAG_PREFIX=''
+          else
+            TAG_GLOB='fork-v[0-9]*.[0-9]*.[0-9]*'
+            TAG_PREFIX='fork-'
           fi
-          LATEST_VERSION="${LATEST_TAG#v}"
+
+          # Exclude pre-release tags. Match on '-rc' rather than any '-', because the
+          # fork prefix itself contains a hyphen.
+          LATEST_TAG=$(git tag -l "$TAG_GLOB" --sort=-version:refname | grep -v -- '-rc' | head -1)
+          if [ -z "$LATEST_TAG" ]; then
+            if [ -n "$TAG_PREFIX" ]; then
+              LATEST_TAG="${TAG_PREFIX}v0.0.0"   # fork has not cut a stable release yet
+            else
+              echo "::error::No stable release tag found"
+              exit 1
+            fi
+          fi
+          LATEST_VERSION="${LATEST_TAG#${TAG_PREFIX}v}"
           echo "Latest release: $LATEST_TAG"
 
           # ── Analyse conventional commits since that tag ──
@@ -68,7 +130,7 @@ jobs:
             fi
           fi
           VERSION="${MAJOR}.${MINOR}.${PATCH}"
-          TAG="dev-${VERSION}-rc.${{ github.run_number }}"
+          TAG="${TAG_PREFIX}dev-${VERSION}-rc.${{ github.run_number }}"
 
           echo "Next version: $VERSION (from $LATEST_VERSION)"
           echo "Pre-release tag: $TAG"
@@ -98,6 +160,7 @@ jobs:
   # ═══════════════════════════════════════════════
 
   release-please:
+    needs: ci-gate
     if: github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     outputs:
