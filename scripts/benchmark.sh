@@ -345,9 +345,18 @@ bench "wc" "wc Cargo.toml src/main.rs" "$RTK wc Cargo.toml src/main.rs"
 # curl
 # ===================
 section "curl"
+# Pinned local fixtures, not a live host. These cases used to fetch
+# https://mockhttp.org/json/1, which returns a *randomly chosen* payload per
+# request — so the raw call and the rtk call received different bodies and the
+# ratio between them was noise. It failed the build at random, and since CD's
+# ci-gate blocks releases on CI, a third party's mock API could stop all
+# releases. file:// keeps curl and the filter in the loop while making the
+# comparison deterministic and offline.
+CURL_JSON_URL="file://$(pwd)/tests/fixtures/benchmark_curl.json"
+CURL_TEXT_URL="file://$(pwd)/tests/fixtures/benchmark_curl.txt"
 if command -v curl &> /dev/null; then
-  bench "curl json" "curl -s https://mockhttp.org/json/1" "$RTK curl https://mockhttp.org/json/1"
-  bench "curl text" "curl -s https://mockhttp.org/robots.txt" "$RTK curl https://mockhttp.org/robots.txt"
+  bench "curl json" "curl -s $CURL_JSON_URL" "$RTK curl $CURL_JSON_URL"
+  bench "curl text" "curl -s $CURL_TEXT_URL" "$RTK curl $CURL_TEXT_URL"
 fi
 
 # ===================
@@ -355,7 +364,8 @@ fi
 # ===================
 if command -v wget &> /dev/null; then
   section "wget"
-  bench "wget" "wget -qO- https://mockhttp.org/json/1" "$RTK wget https://mockhttp.org/json/1"
+  # Same pinned fixture, same reason as the curl cases above.
+  bench "wget" "wget -qO- $CURL_JSON_URL" "$RTK wget $CURL_JSON_URL"
   rm -f 1 2>/dev/null
 fi
 

@@ -21,7 +21,8 @@ END="<!-- FORK_DELTA_END -->"
 
 # Fork-process scopes. Real commits, but they change how the fork is maintained,
 # not what rtk does — a visitor evaluating the binary does not care about them.
-EXCLUDE_SCOPES="skills|review|sync|context|docs|ci|cicd|test"
+# `fork` is here because the landing page must not advertise itself as a fix.
+EXCLUDE_SCOPES="skills|review|sync|context|docs|ci|cicd|test|fork"
 
 if ! git rev-parse --verify --quiet "$UPSTREAM_REF" >/dev/null; then
   echo "error: $UPSTREAM_REF not found. Add the upstream remote and fetch:" >&2

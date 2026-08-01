@@ -16,8 +16,15 @@ When a coding agent runs `cargo test`, `git log`, `npm install`, or `pytest`, th
 output goes straight into its context window — thousands of lines of progress bars,
 timestamps, and repetition, most of which the model cannot use. rtk sits in front of
 those commands, runs them for real, and passes back a filtered version that keeps the
-errors, the failures, and the diagnostics while dropping the noise. Typical reduction
-is 60–90% of bash output.
+errors, the failures, and the diagnostics while dropping the noise. Across rtk's own
+benchmark suite — 73 cases, run with [`scripts/benchmark.sh`](../scripts/benchmark.sh) —
+aggregate output came to **541,111 → 123,205 tokens, a 77% reduction**. Individual
+commands vary enormously: some are cut by 90%, and some are passed through untouched
+because filtering them would lose information or gain nothing.
+
+That is a measure of **bash output**, not of your bill, and rtk ships no tokenizer —
+it estimates tokens as bytes/4, so the ratios are sound and the absolute counts are
+approximate.
 
 It is a transparent proxy: `rtk cargo test` runs `cargo test`, exits with the same
 status code, and works for commands it has no specific filter for. A hook can rewrite
@@ -41,14 +48,13 @@ output *larger* and more correct. This fork does not claim to save more tokens t
 upstream — that is upstream's pitch. It claims to not lose your errors.
 
 <!-- FORK_DELTA_START -->
-**31 fixes in this fork that upstream does not have.** Each links to the commit,
+**30 fixes in this fork that upstream does not have.** Each links to the commit,
 where the original author is recorded. Adopted fixes come from community PRs that upstream
 has not merged — see the [adoption issues](https://github.com/kylehgc/rtk/issues?q=is%3Aissue+Adopt+upstream)
 for provenance.
 
 | Fix | Commit |
 |---|---|
-| feat(fork): add the landing page, delta generator, and proof suite | [`55f20c3`](https://github.com/kylehgc/rtk/commit/55f20c3) |
 | fix(cargo): stop the raw-tail fallback restating captured warnings | [`f954b61`](https://github.com/kylehgc/rtk/commit/f954b61) |
 | fix(cargo): keep compile errors visible when warnings are captured | [`6235d4b`](https://github.com/kylehgc/rtk/commit/6235d4b) |
 | fix(cargo): preserve compiler warnings in cargo test output on passing runs | [`ff13986`](https://github.com/kylehgc/rtk/commit/ff13986) |
