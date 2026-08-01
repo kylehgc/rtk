@@ -85,9 +85,12 @@ Three edits to `release.yml` and `next-release.yml` are deliberately **not** For
 
 - the repo guard on the Discord and Homebrew jobs (a fork must never be able to write to upstream's tap or announce in upstream's Discord),
 - the GitHub App token falling back to `GITHUB_TOKEN` when no App is installed (without it, the entire release run fails on any fork),
-- the `permissions` block `next-release.yml` needs for that fallback to have any rights at all.
+- the `permissions` block `next-release.yml` needs for that fallback to have any rights at all,
+- stamping `Cargo.toml`'s version from the release tag at build time, so an RC does not report the stale version release-please last wrote on `master` (upstream's own RCs ship `rtk_0.42.4-1_amd64.deb` for the same reason; on a fork that filename additionally collides byte-for-byte with upstream's artifact).
 
 The distinction is the test, not the file: an edit lands in the table above only when upstream would have no reason to want it.
+
+**Deferred Upstream PRs.** The obligation does not expire because a fix is convenient to keep. When the maintainer defers submission — batching, timing, not wanting to flood upstream — the fix is recorded as owed, not quietly reclassified as Fork Infrastructure. An Original fix sitting unsubmitted is divergence the fork is carrying on upstream's behalf, and the fork should know how much of it there is.
 
 **Release track**:
 The fork publishes on two. **RC** — every push to `develop` builds `fork-dev-X.Y.Z-rc.N`, automatic and continuous, for the maintainer and anyone wanting the tip. **Stable** — `fork-vX.Y.Z`, cut by merging the accumulated `develop → master` PR when the maintainer judges there is enough, and the only track a visitor is pointed at. Fork versions restart at `0.1.0` and never track upstream's numbers; the upstream base is stated in the release notes, never encoded in the version.

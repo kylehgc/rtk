@@ -61,6 +61,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Cargo.toml on develop still carries whatever release-please last wrote on
+      # master, so an RC would otherwise report that stale version in
+      # `rtk --version`, in telemetry, and in the .deb/.rpm filenames.
+      - name: Stamp version from tag
+        shell: bash
+        run: bash scripts/version-from-tag.sh "${{ inputs.tag }}"
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -112,6 +119,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Stamp version from tag
+        run: bash scripts/version-from-tag.sh "${{ inputs.tag }}"
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -137,6 +147,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Stamp version from tag
+        run: bash scripts/version-from-tag.sh "${{ inputs.tag }}"
 
       - name: Install dependencies
         run: |
