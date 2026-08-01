@@ -41,13 +41,14 @@ output *larger* and more correct. This fork does not claim to save more tokens t
 upstream — that is upstream's pitch. It claims to not lose your errors.
 
 <!-- FORK_DELTA_START -->
-**30 fixes in this fork that upstream does not have.** Each links to the commit,
+**31 fixes in this fork that upstream does not have.** Each links to the commit,
 where the original author is recorded. Adopted fixes come from community PRs that upstream
 has not merged — see the [adoption issues](https://github.com/kylehgc/rtk/issues?q=is%3Aissue+Adopt+upstream)
 for provenance.
 
 | Fix | Commit |
 |---|---|
+| feat(fork): add the landing page, delta generator, and proof suite | [`55f20c3`](https://github.com/kylehgc/rtk/commit/55f20c3) |
 | fix(cargo): stop the raw-tail fallback restating captured warnings | [`f954b61`](https://github.com/kylehgc/rtk/commit/f954b61) |
 | fix(cargo): keep compile errors visible when warnings are captured | [`6235d4b`](https://github.com/kylehgc/rtk/commit/6235d4b) |
 | fix(cargo): preserve compiler warnings in cargo test output on passing runs | [`ff13986`](https://github.com/kylehgc/rtk/commit/ff13986) |
