@@ -1,0 +1,23 @@
+# Claims made on the fork landing page, and the test that proves each one.
+#
+# No claim without a test: scripts/fork-proof.sh fails if a claim here has no
+# matching test, or if its test does not actually fail against upstream. A claim
+# that upstream has since fixed will start passing there — delete the row and the
+# corresponding fork divergence. See CONTEXT.md, "Claim" and "Proof suite".
+#
+# class is one of:
+#   fidelity   upstream drops information, the fork keeps it (output gets LARGER)
+#   reduction  upstream passes output through unfiltered, the fork filters it
+#
+# test<TAB>class<TAB>claim
+machine_readable_git_output_is_byte_identical_to_native	fidelity	Upstream filters `git --porcelain` output that was never meant to be read by a human; the fork passes machine output through byte-for-byte.
+non_utf8_pattern_does_not_abort	fidelity	Upstream aborts (SIGABRT, exit 134) on any argument containing non-UTF-8 bytes, before the wrapped command runs; the fork executes it.
+non_utf8_pattern_forwards_original_bytes	fidelity	The wrapped tool receives the exact bytes the user typed, not a lossy copy.
+non_utf8_arg_to_missing_command_exits_cleanly	fidelity	A non-UTF-8 argument to a command that does not exist exits cleanly instead of aborting.
+pnpm_install_failure_preserves_stdout_error_output	fidelity	Upstream discards the error output of a failed `pnpm install`; the fork preserves it.
+failing_tool_stderr_reaches_the_user	fidelity	Upstream swallows a failing tool's stderr under stdout-only filtering; the fork surfaces it.
+
+# Deliberately NOT claimed — these are the fork's own regression guards, asserting
+# behaviour upstream also has. They pass on both sides and prove no difference:
+#   human_facing_git_output_is_still_filtered
+#   successful_tool_stderr_stays_suppressed

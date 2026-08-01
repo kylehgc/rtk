@@ -1,0 +1,53 @@
+# Fork-only. Upstream has no file at this path, so it never conflicts on sync.
+#
+# Runs the fork's portable integration tests against a checkout of upstream/develop
+# and refreshes the proof table. Not on every push: it builds upstream's entire crate
+# as well as ours, so it runs on a schedule and before a release instead.
+#
+# This job failing is meaningful, not flaky. It fails when a claim in
+# .github/fork-claims.tsv has no passing test here, or when a test starts PASSING
+# upstream — which means upstream merged the fix and the fork should drop that
+# divergence and the claim with it.
+name: Fork proof
+
+on:
+  schedule:
+    - cron: '17 4 * * 1' # Mondays, 04:17 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: fork-proof
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest # Linux only: some proof tests use std::os::unix
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/rtk-ai/rtk.git 2>/dev/null || true
+          git fetch --quiet upstream develop
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Run proof suite
+        run: bash scripts/fork-proof.sh
+
+      - name: Commit if changed
+        run: |
+          if git diff --quiet -- .github/README.md; then
+            echo "Proof table unchanged."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .github/README.md
+          git commit -m "docs(fork): refresh proof table"
+          git push
