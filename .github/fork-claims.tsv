@@ -24,6 +24,8 @@ claude_hook_rewrites_current_input_key_shape	fidelity	Upstream's Claude hook onl
 claude_hook_emits_ask_decision_for_default_verdict	fidelity	Upstream's Claude hook omits `permissionDecision` for an unconfigured (Default-verdict) rewrite, relying on an absent key; the fork explicitly emits `"ask"`.
 rg_short_r_cluster_does_not_trigger_ripgrep_replace	fidelity	Upstream forwards `-r`/`-R` to ripgrep unchanged, so grep muscle memory (`rg -rn`) is silently read as `--replace` and every match is rewritten to garbage; the fork strips it before rg runs.
 rg_dash_prefixed_flag_value_survives_r_strip	fidelity	Upstream's `-r`/`-R` ambiguity corrupts matches the same way even when a value token (e.g. a `--glob` value) happens to start with `-r`; the fork strips only the real flag and leaves the value intact.
+cargo_test_preserves_compiler_warnings_on_passing_run	fidelity	Upstream drops every compiler warning on a passing `cargo test` run; the fork preserves the full warning detail and annotates the summary with a compiler-warning count.
+piped_cargo_test_filter_does_not_restate_captured_warnings	reduction	Measures: on `cargo test` output with a warning but no test-result line, the fork's raw-tail fallback excludes lines its captured-warnings section already printed — the warning's detail line appears exactly once (not restated) and the filtered output is smaller than raw cargo output; upstream has no captured-warnings section to protect.
 
 # Deliberately NOT claimed — these are the fork's own regression guards, asserting
 # behaviour upstream also has. They pass on both sides and prove no difference:
