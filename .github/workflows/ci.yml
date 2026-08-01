@@ -3,6 +3,13 @@ name: CI
 on:
   pull_request:
     branches: [develop, master]
+  # Fork Infrastructure (see CONTEXT.md). CD's ci-gate looks up the CI conclusion
+  # for the exact commit it is about to release. A merge commit on develop has a
+  # different SHA than the PR head CI ran on, so without a push trigger there is
+  # no run to find and every release would block. Also means mainline itself is
+  # verified after a merge, which pull_request alone never did.
+  push:
+    branches: [develop, master]
 
 permissions:
   contents: read

@@ -77,6 +77,7 @@ Current entries:
 | File | Fork edit | Why upstream can't hold it |
 |---|---|---|
 | `.github/workflows/cd.yml` | `fork-` prefix on RC tags; CD gated on CI green | The prefix exists to avoid colliding with upstream's own tags — meaningless in upstream |
+| `.github/workflows/ci.yml` | `push` trigger on develop/master | Exists to give CD's `ci-gate` a run to look up for the merge commit it is about to release; upstream has no such gate |
 | `release-please-config.json` (master only) | `fork-v` tag prefix | Same |
 | `.release-please-manifest.json` (master only) | version seed for the fork's own numbering | The fork's version line is not upstream's |
 
