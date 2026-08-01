@@ -48,13 +48,14 @@ output *larger* and more correct. This fork does not claim to save more tokens t
 upstream — that is upstream's pitch. It claims to not lose your errors.
 
 <!-- FORK_DELTA_START -->
-**34 fixes in this fork that upstream does not have.** Each links to the commit,
+**35 fixes in this fork that upstream does not have.** Each links to the commit,
 where the original author is recorded. Adopted fixes come from community PRs that upstream
 has not merged — see the [adoption issues](https://github.com/kylehgc/rtk/issues?q=is%3Aissue+Adopt+upstream)
 for provenance.
 
 | Fix | Commit |
 |---|---|
+| fix(release): make the version stamp work on macOS and RPM | [`79f2dd9`](https://github.com/kylehgc/rtk/commit/79f2dd9) |
 | fix(release): stamp Cargo.toml's version from the release tag | [`0a876c8`](https://github.com/kylehgc/rtk/commit/0a876c8) |
 | fix(cd): compute the first fork RC without a tag that does not exist | [`1696cda`](https://github.com/kylehgc/rtk/commit/1696cda) |
 | fix(bench): serve curl/wget fixtures over local HTTP, not file:// | [`1d1d86b`](https://github.com/kylehgc/rtk/commit/1d1d86b) |
