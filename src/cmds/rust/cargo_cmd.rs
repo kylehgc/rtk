@@ -8,7 +8,7 @@ use crate::core::utils::{join_with_overflow, resolved_command, truncate};
 use anyhow::Result;
 use serde::Deserialize;
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::sync::LazyLock;
 
@@ -1362,10 +1362,13 @@ pub(crate) fn filter_cargo_test(output: &str) -> String {
             }
         }
 
-        // Fallback: show last meaningful lines
+        // Fallback: show last meaningful lines, minus anything the warnings
+        // section above already printed — otherwise those lines report twice.
+        let already_shown: HashSet<&str> = warnings_section.lines().collect();
         let meaningful: Vec<&str> = output
             .lines()
             .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with("Compiling"))
+            .filter(|l| !already_shown.contains(*l))
             .collect();
         for line in meaningful.iter().rev().take(5).rev() {
             result.push_str(&format!("{}\n", line));
@@ -1798,6 +1801,40 @@ error: aborting due to 1 previous error
                 .count(),
             1,
             "warning block must appear exactly once, got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_filter_cargo_test_no_run_does_not_repeat_warnings_in_tail() {
+        // `cargo test --no-run`: warnings, but no "test result:" line and no
+        // errors — the raw-tail fallback must not restate lines the warnings
+        // section already printed.
+        let output = r#"   Compiling failproj v0.1.0
+warning: function `unused_helper` is never used
+ --> src/lib.rs:1:4
+  |
+1 | fn unused_helper() -> i32 {
+  |    ^^^^^^^^^^^^^
+  |
+  = note: `#[warn(dead_code)]` on by default
+
+warning: `failproj` (lib) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
+  Executable unittests src/lib.rs (target/debug/deps/failproj-abc123)
+"#;
+        let result = filter_cargo_test(output);
+        assert_eq!(
+            result
+                .matches("= note: `#[warn(dead_code)]` on by default")
+                .count(),
+            1,
+            "warning line must not appear twice, got: {}",
+            result
+        );
+        assert!(
+            result.contains("unused_helper"),
+            "warning must still be reported, got: {}",
             result
         );
     }
