@@ -102,6 +102,29 @@ This covers a subset of the fixes listed above; fixes tested only by internal un
 cannot be lifted into upstream's tree, so they are claimed but not proven.
 
 <!-- FORK_PROOF_START -->
+**16 claims proven** by tests that pass on this fork and fail against
+`upstream/develop` — 14 fidelity, 2 reduction. Run them yourself with
+`scripts/fork-proof.sh`.
+
+| Claim | Test | Upstream | This fork |
+|---|---|---|---|
+| Upstream filters `git --porcelain` output that was never meant to be read by a human; the fork passes machine output through byte-for-byte. | `machine_readable_git_output_is_byte_identical_to_native` | ❌ fails | ✅ passes |
+| Upstream aborts (SIGABRT, exit 134) on any argument containing non-UTF-8 bytes, before the wrapped command runs; the fork executes it. | `non_utf8_pattern_does_not_abort` | ❌ fails | ✅ passes |
+| The wrapped tool receives the exact bytes the user typed, not a lossy copy. | `non_utf8_pattern_forwards_original_bytes` | ❌ fails | ✅ passes |
+| A non-UTF-8 argument to a command that does not exist exits cleanly instead of aborting. | `non_utf8_arg_to_missing_command_exits_cleanly` | ❌ fails | ✅ passes |
+| Upstream discards the error output of a failed `pnpm install`; the fork preserves it. | `pnpm_install_failure_preserves_stdout_error_output` | ❌ fails | ✅ passes |
+| Upstream swallows a failing tool's stderr under stdout-only filtering; the fork surfaces it. | `failing_tool_stderr_reaches_the_user` | ❌ fails | ✅ passes |
+| Upstream aborts `rtk init` with a JSON parse error on a UTF-8 BOM-prefixed settings.json (which Notepad and PowerShell 5.1 write by default); the fork strips the BOM and parses it. | `init_dry_run_tolerates_bom_prefixed_settings_json` | ❌ fails | ✅ passes |
+| Upstream's tsc filter doesn't recognize `tsc --noEmit --pretty` diagnostics (ANSI colors, code frames) and passes them through near-unfiltered; the fork parses and compresses them >=60% (measured: rtk's own bytes/4 token estimator, input vs. output, on a real captured 9-diagnostic fixture). | `tsc_pipe_filter_compresses_real_pretty_diagnostics` | ❌ fails | ✅ passes |
+| Upstream drops the diff hunks from `git log -p`, keeping only a 3-line-capped commit summary; the fork passes the real patch through. | `git_log_patch_preserves_diff_hunks` | ❌ fails | ✅ passes |
+| Upstream's `git log --stat` loses commits whose diffstat pushes the next commit's header out of its 3-line body cap; the fork keeps every commit. | `git_log_stat_keeps_every_commit` | ❌ fails | ✅ passes |
+| Upstream's Claude hook only reads the legacy `tool_input` key and silently ignores the current `input`-shaped PreToolUse payload; the fork rewrites it and preserves sibling fields. | `claude_hook_rewrites_current_input_key_shape` | ❌ fails | ✅ passes |
+| Upstream's Claude hook omits `permissionDecision` for an unconfigured (Default-verdict) rewrite, relying on an absent key; the fork explicitly emits `"ask"`. | `claude_hook_emits_ask_decision_for_default_verdict` | ❌ fails | ✅ passes |
+| Upstream forwards `-r`/`-R` to ripgrep unchanged, so grep muscle memory (`rg -rn`) is silently read as `--replace` and every match is rewritten to garbage; the fork strips it before rg runs. | `rg_short_r_cluster_does_not_trigger_ripgrep_replace` | ❌ fails | ✅ passes |
+| Upstream's `-r`/`-R` ambiguity corrupts matches the same way even when a value token (e.g. a `--glob` value) happens to start with `-r`; the fork strips only the real flag and leaves the value intact. | `rg_dash_prefixed_flag_value_survives_r_strip` | ❌ fails | ✅ passes |
+| Upstream drops every compiler warning on a passing `cargo test` run; the fork preserves the full warning detail and annotates the summary with a compiler-warning count. | `cargo_test_preserves_compiler_warnings_on_passing_run` | ❌ fails | ✅ passes |
+| Measures: on `cargo test` output with a warning but no test-result line, the fork's raw-tail fallback excludes lines its captured-warnings section already printed — the warning's detail line appears exactly once (not restated) and the filtered output is smaller than raw cargo output; upstream has no captured-warnings section to protect. | `piped_cargo_test_filter_does_not_restate_captured_warnings` | ❌ fails | ✅ passes |
+
 <!-- FORK_PROOF_END -->
 
 ## Install
