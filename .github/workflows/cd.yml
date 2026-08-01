@@ -93,19 +93,24 @@ jobs:
           # Exclude pre-release tags. Match on '-rc' rather than any '-', because the
           # fork prefix itself contains a hyphen.
           LATEST_TAG=$(git tag -l "$TAG_GLOB" --sort=-version:refname | grep -v -- '-rc' | head -1)
-          if [ -z "$LATEST_TAG" ]; then
-            if [ -n "$TAG_PREFIX" ]; then
-              LATEST_TAG="${TAG_PREFIX}v0.0.0"   # fork has not cut a stable release yet
-            else
-              echo "::error::No stable release tag found"
-              exit 1
-            fi
+          if [ -n "$LATEST_TAG" ]; then
+            LATEST_VERSION="${LATEST_TAG#${TAG_PREFIX}v}"
+            COMMIT_RANGE="${LATEST_TAG}..HEAD"
+            echo "Latest release: $LATEST_TAG"
+          elif [ -n "$TAG_PREFIX" ]; then
+            # The fork has not cut a stable release yet. 0.0.0 is a starting point for
+            # the version maths, NOT a ref — `git log 0.0.0..HEAD` would abort — so the
+            # range has to be all of history.
+            LATEST_VERSION="0.0.0"
+            COMMIT_RANGE="HEAD"
+            echo "No ${TAG_PREFIX}v tag yet; starting the fork's version line at 0.0.0"
+          else
+            echo "::error::No stable release tag found"
+            exit 1
           fi
-          LATEST_VERSION="${LATEST_TAG#${TAG_PREFIX}v}"
-          echo "Latest release: $LATEST_TAG"
 
           # ── Analyse conventional commits since that tag ──
-          COMMITS=$(git log "${LATEST_TAG}..HEAD" --format="%s")
+          COMMITS=$(git log $COMMIT_RANGE --format="%s")
           HAS_BREAKING=$(echo "$COMMITS" | grep -cE '^[a-z]+(\(.+\))?!:' || true)
           HAS_FEAT=$(echo "$COMMITS"    | grep -cE '^feat(\(.+\))?:'     || true)
           HAS_FIX=$(echo "$COMMITS"     | grep -cE '^fix(\(.+\))?:'      || true)
