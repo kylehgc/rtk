@@ -152,7 +152,7 @@ fn warn_marker_path() -> Option<PathBuf> {
 /// file may not update the mtime, which breaks the rate-limiting check.
 fn touch_warn_marker(marker: &std::path::Path) -> std::io::Result<()> {
     if let Some(parent) = marker.parent() {
-        std::fs::create_dir_all(parent)?;
+        crate::core::utils::create_private_dir(parent)?;
     }
     std::fs::write(marker, b"1")
 }
