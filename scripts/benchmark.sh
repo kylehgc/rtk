@@ -345,17 +345,60 @@ bench "wc" "wc Cargo.toml src/main.rs" "$RTK wc Cargo.toml src/main.rs"
 # curl
 # ===================
 section "curl"
-if command -v curl &> /dev/null; then
-  bench "curl json" "curl -s https://mockhttp.org/json/1" "$RTK curl https://mockhttp.org/json/1"
-  bench "curl text" "curl -s https://mockhttp.org/robots.txt" "$RTK curl https://mockhttp.org/robots.txt"
+# Served from a local fixture server, not a live host.
+#
+# These cases used to fetch https://mockhttp.org/json/1, which returns a
+# *randomly chosen* payload per request. bench() invokes the raw command and the
+# rtk command separately, so the two sides received different bodies and the
+# ratio between them was noise — it fails roughly one run in four, at random.
+#
+# A local server rather than file:// URLs: wget does not support the file
+# scheme at all, and file:// would bypass HTTP entirely, which is the one thing
+# these cases exist to measure.
+BENCH_PORT="${BENCH_PORT:-8731}"
+BENCH_SRV_PID=""
+
+stop_fixture_server() {
+  if [ -n "$BENCH_SRV_PID" ]; then
+    kill "$BENCH_SRV_PID" 2>/dev/null || true
+    BENCH_SRV_PID=""
+  fi
+}
+trap stop_fixture_server EXIT
+
+start_fixture_server() {
+  command -v python3 &> /dev/null || return 1
+  python3 -m http.server "$BENCH_PORT" --directory tests/fixtures &> /dev/null &
+  BENCH_SRV_PID=$!
+  local i
+  for i in $(seq 1 50); do
+    if curl -sf -o /dev/null "http://127.0.0.1:${BENCH_PORT}/benchmark_curl.json"; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  stop_fixture_server
+  return 1
+}
+
+FIXTURE_SERVER=0
+if command -v curl &> /dev/null && start_fixture_server; then
+  FIXTURE_SERVER=1
+  CURL_JSON_URL="http://127.0.0.1:${BENCH_PORT}/benchmark_curl.json"
+  CURL_TEXT_URL="http://127.0.0.1:${BENCH_PORT}/benchmark_curl.txt"
+  bench "curl json" "curl -s $CURL_JSON_URL" "$RTK curl $CURL_JSON_URL"
+  bench "curl text" "curl -s $CURL_TEXT_URL" "$RTK curl $CURL_TEXT_URL"
+elif command -v curl &> /dev/null; then
+  echo "  SKIPPED curl cases: could not start the local fixture server (python3 missing?)"
 fi
 
 # ===================
 # wget
 # ===================
-if command -v wget &> /dev/null; then
+if command -v wget &> /dev/null && [ "$FIXTURE_SERVER" -eq 1 ]; then
   section "wget"
-  bench "wget" "wget -qO- https://mockhttp.org/json/1" "$RTK wget https://mockhttp.org/json/1"
+  # Same local fixture server as the curl cases above, same reason.
+  bench "wget" "wget -qO- $CURL_JSON_URL" "$RTK wget $CURL_JSON_URL"
   rm -f 1 2>/dev/null
 fi
 
