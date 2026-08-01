@@ -289,9 +289,9 @@ Two Windows traps that make a working fix look broken:
 
 ### Quality gate — the merge gate
 
-**Fork CI never runs.** GitHub Actions produces zero runs on this fork despite active workflows,
-so a green-looking PR proves nothing. The local gate is the only gate. Don't wait on
-`gh pr checks`.
+The local gate (below) is the merge gate. Fork CI also runs and must stay green — a ci-gate job
+blocks releases from a red build — so after merging, check
+`gh run list --repo kylehgc/rtk --branch develop` and fix any red run before moving on.
 
 ```bash
 cargo fmt --all && cargo clippy --all-targets && cargo test --all
@@ -416,4 +416,5 @@ Inherited skills written for upstream maintainers, and what they do here:
 | `ship`, `performance` | Use `/usr/bin/time -l` (macOS-only) and assume a plain `cargo` on PATH. Neither holds on this machine. |
 
 And the standing ones: never `--squash`, never rebase published history, never force push, never
-commit directly to `develop` except a clean Sync, never trust fork CI.
+commit directly to `develop` except a clean Sync, never treat green fork CI as a substitute for
+the local gate.
