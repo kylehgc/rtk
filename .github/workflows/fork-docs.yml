@@ -1,0 +1,50 @@
+# Fork-only. Upstream has no file at this path, so it never conflicts on sync.
+#
+# Regenerates the Fork Delta block in the landing page on every push to develop.
+# Commits with the default GITHUB_TOKEN on purpose: GitHub does not trigger
+# workflows from GITHUB_TOKEN pushes, so this cannot loop into CD and cut an RC
+# for its own commit. Do NOT swap this for the App token.
+name: Fork docs
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+concurrency:
+  group: fork-docs
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  delta:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref_name }}   # not detached HEAD — this job pushes
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/rtk-ai/rtk.git 2>/dev/null || true
+          git fetch --quiet upstream develop
+
+      - name: Regenerate delta
+        run: bash scripts/fork-delta.sh
+
+      - name: Commit if changed
+        run: |
+          if git diff --quiet -- .github/README.md; then
+            echo "Delta unchanged."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .github/README.md
+          git commit -m "docs(fork): refresh delta"
+          # A push may have landed since checkout; rebase rather than fail.
+          git pull --rebase --quiet origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"

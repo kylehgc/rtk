@@ -2,3 +2,7 @@
 # Without this, Windows runners (core.autocrlf=true) check fixtures out with
 # CRLF, and tests that synthesize CRLF input from them produce \r\r\n.
 tests/fixtures/** -text
+
+# Shell scripts must stay LF. On Windows (core.autocrlf=true) they would otherwise
+# check out with CRLF, and bash fails on the carriage returns.
+*.sh text eol=lf

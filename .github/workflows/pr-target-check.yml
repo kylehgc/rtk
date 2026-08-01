@@ -7,14 +7,22 @@ on:
 jobs:
   check-target:
     runs-on: ubuntu-latest
-    permissions: {}
+    # Scoped for the GITHUB_TOKEN fallback below. The App token, where one is
+    # installed, carries its own permissions and ignores these.
+    permissions:
+      pull-requests: write
+      issues: write
     # Skip develop→master PRs (maintainer releases)
     if: >-
       github.event.pull_request.base.ref == 'master' &&
       github.event.pull_request.head.ref != 'develop'
     steps:
+      # Forks have no App installed. Fall back to GITHUB_TOKEN rather than failing
+      # the check outright — a red "wrong base" check on a correctly-based PR is
+      # worse than no check.
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token
+        continue-on-error: true
         with:
           client-id: ${{ secrets.APP_CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
@@ -23,7 +31,7 @@ jobs:
       - name: Add wrong-base label and comment
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
-          github-token: ${{ steps.app-token.outputs.token }}
+          github-token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
           script: |
             const pr = context.payload.pull_request;
 
