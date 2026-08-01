@@ -8,7 +8,7 @@ use crate::core::utils::{join_with_overflow, resolved_command, truncate};
 use anyhow::Result;
 use serde::Deserialize;
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::sync::LazyLock;
 
@@ -126,6 +126,8 @@ struct CargoTestHandler {
     in_failure_names: bool,
     summary_lines: Vec<String>,
     has_compile_errors: bool,
+    warnings: usize,
+    in_warning_block: bool,
 }
 
 impl CargoTestHandler {
@@ -135,6 +137,8 @@ impl CargoTestHandler {
             in_failure_names: false,
             summary_lines: Vec::new(),
             has_compile_errors: false,
+            warnings: 0,
+            in_warning_block: false,
         }
     }
 }
@@ -153,6 +157,11 @@ impl BlockHandler for CargoTestHandler {
             return true;
         }
         if line.starts_with("test ") && line.ends_with("... ok") {
+            return true;
+        }
+        // Aggregate count line ("warning: `x` generated N warnings"); individual
+        // warning blocks are already streamed via is_block_start below.
+        if line.starts_with("warning:") && line.contains("generated") && line.contains("warning") {
             return true;
         }
         // Track compile errors for fallback
@@ -187,10 +196,26 @@ impl BlockHandler for CargoTestHandler {
     }
 
     fn is_block_start(&mut self, line: &str) -> bool {
-        self.in_failure_section && line.starts_with("---- ")
+        if self.in_failure_section && line.starts_with("---- ") {
+            self.in_warning_block = false;
+            return true;
+        }
+        // Compile-phase warnings on a passing run were previously dropped
+        // (exit 0 → no tee → unrecoverable); stream them like CargoBuildHandler.
+        if !self.in_failure_section
+            && (line.starts_with("warning:") || line.starts_with("warning["))
+        {
+            self.warnings += 1;
+            self.in_warning_block = true;
+            return true;
+        }
+        false
     }
 
-    fn is_block_continuation(&mut self, line: &str, _block: &[String]) -> bool {
+    fn is_block_continuation(&mut self, line: &str, block: &[String]) -> bool {
+        if self.in_warning_block {
+            return !(line.trim().is_empty() && block.len() > 3);
+        }
         self.in_failure_section && !line.starts_with("---- ")
     }
 
@@ -200,7 +225,8 @@ impl BlockHandler for CargoTestHandler {
             if self.has_compile_errors || !json.errors.is_empty() {
                 // Content-based (exit 0): a real compile error yields "cargo test: N
                 // errors"; a bare "could not compile" leaves the raw tail fallback.
-                let build_filtered = filter_cargo_build_labeled(raw, "test", 0);
+                // Warning blocks already went out live, so suppress them here.
+                let build_filtered = filter_cargo_build_inner(raw, "test", 0, true);
                 if build_filtered.contains("cargo test:") {
                     return Some(format!("{}\n", build_filtered));
                 }
@@ -234,6 +260,13 @@ impl BlockHandler for CargoTestHandler {
         if all_parsed {
             if let Some(agg) = aggregated {
                 if agg.suites > 0 {
+                    if self.warnings > 0 {
+                        return Some(format!(
+                            "{} [{} compiler warnings]\n",
+                            agg.format_compact(),
+                            self.warnings
+                        ));
+                    }
                     return Some(format!("{}\n", agg.format_compact()));
                 }
             }
@@ -956,6 +989,17 @@ fn filter_cargo_build(output: &str) -> String {
 }
 
 fn filter_cargo_build_labeled(output: &str, label: &'static str, exit_code: i32) -> String {
+    filter_cargo_build_inner(output, label, exit_code, false)
+}
+
+/// `skip_warning_blocks` drops rendered warning blocks while keeping them in the
+/// counts — for callers that already emitted those blocks themselves.
+fn filter_cargo_build_inner(
+    output: &str,
+    label: &'static str,
+    exit_code: i32,
+    skip_warning_blocks: bool,
+) -> String {
     let mut handler = CargoBuildHandler::with_label(label);
     let mut blocks: Vec<Vec<String>> = Vec::new();
     let mut current_block: Vec<String> = Vec::new();
@@ -982,6 +1026,12 @@ fn filter_cargo_build_labeled(output: &str, label: &'static str, exit_code: i32)
     }
     if !current_block.is_empty() {
         blocks.push(current_block);
+    }
+    if skip_warning_blocks {
+        blocks.retain(|b| {
+            b.first()
+                .is_some_and(|l| !(l.starts_with("warning:") || l.starts_with("warning[")))
+        });
     }
 
     let json = extract_json_diagnostics(output);
@@ -1120,6 +1170,9 @@ pub(crate) fn filter_cargo_test(output: &str) -> String {
     let mut summary_lines: Vec<String> = Vec::new();
     let mut in_failure_section = false;
     let mut current_failure = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    let mut current_warning: Vec<String> = Vec::new();
+    let mut in_warning_block = false;
 
     for line in output.lines() {
         // Skip compilation lines
@@ -1134,6 +1187,48 @@ pub(crate) fn filter_cargo_test(output: &str) -> String {
         // Skip "running N tests" and individual "test ... ok" lines
         if line.starts_with("running ") || (line.starts_with("test ") && line.ends_with("... ok")) {
             continue;
+        }
+
+        // Compile-phase warnings on a passing run were previously dropped
+        // (exit 0 → no tee → unrecoverable). Capture the blocks; skip the
+        // aggregate "warning: `x` generated N warnings" count line.
+        if line.starts_with("warning:") && line.contains("generated") && line.contains("warning") {
+            in_warning_block = false;
+            if !current_warning.is_empty() {
+                warnings.push(current_warning.join("\n"));
+                current_warning.clear();
+            }
+            continue;
+        }
+        if !in_failure_section && (line.starts_with("warning:") || line.starts_with("warning[")) {
+            if !current_warning.is_empty() {
+                warnings.push(current_warning.join("\n"));
+                current_warning.clear();
+            }
+            in_warning_block = true;
+            current_warning.push(line.to_string());
+            continue;
+        }
+        if in_warning_block {
+            // A section marker always ends the warning block (falls through to
+            // normal handling); a blank line ends a well-formed block.
+            let is_section = line == "failures:"
+                || line.starts_with("test result:")
+                || line.starts_with("test ")
+                || line.starts_with("---- ")
+                || line.starts_with("error[")
+                || line.starts_with("error:");
+            if is_section || (line.trim().is_empty() && current_warning.len() > 3) {
+                in_warning_block = false;
+                warnings.push(current_warning.join("\n"));
+                current_warning.clear();
+                if !is_section {
+                    continue;
+                }
+            } else {
+                current_warning.push(line.to_string());
+                continue;
+            }
         }
 
         // Detect failures section
@@ -1165,8 +1260,24 @@ pub(crate) fn filter_cargo_test(output: &str) -> String {
     if !current_failure.is_empty() {
         failures.push(current_failure.join("\n"));
     }
+    if !current_warning.is_empty() {
+        warnings.push(current_warning.join("\n"));
+    }
+
+    let mut warnings_section = String::new();
+    if !warnings.is_empty() {
+        for block in warnings.iter().take(CAP_WARNINGS) {
+            warnings_section.push_str(block);
+            warnings_section.push('\n');
+        }
+        if warnings.len() > CAP_WARNINGS {
+            warnings_section
+                .push_str(&format!("… +{} more warnings\n", warnings.len() - CAP_WARNINGS));
+        }
+    }
 
     let mut result = String::new();
+    result.push_str(&warnings_section);
 
     if failures.is_empty() && !summary_lines.is_empty() {
         // All passed - try to aggregate
@@ -1190,7 +1301,15 @@ pub(crate) fn filter_cargo_test(output: &str) -> String {
         if all_parsed {
             if let Some(agg) = aggregated {
                 if agg.suites > 0 {
-                    return agg.format_compact();
+                    if warnings.is_empty() {
+                        return agg.format_compact();
+                    }
+                    return format!(
+                        "{}{} [{} compiler warnings]",
+                        warnings_section,
+                        agg.format_compact(),
+                        warnings.len()
+                    );
                 }
             }
         }
@@ -1224,7 +1343,11 @@ pub(crate) fn filter_cargo_test(output: &str) -> String {
         result.push_str(&format!("{}\n", line));
     }
 
-    if result.trim().is_empty() {
+    // The warnings section is a prefix, not content — measure the body only, or a
+    // compile failure that also warned would skip the fallback below and report
+    // warnings with no errors. filter_cargo_build_labeled renders its own warning
+    // blocks, so the prefix is deliberately dropped on that path.
+    if result[warnings_section.len()..].trim().is_empty() {
         let json = extract_json_diagnostics(output);
         let has_compile_errors = !json.errors.is_empty()
             || output.lines().any(|line| {
@@ -1239,10 +1362,13 @@ pub(crate) fn filter_cargo_test(output: &str) -> String {
             }
         }
 
-        // Fallback: show last meaningful lines
+        // Fallback: show last meaningful lines, minus anything the warnings
+        // section above already printed — otherwise those lines report twice.
+        let already_shown: HashSet<&str> = warnings_section.lines().collect();
         let meaningful: Vec<&str> = output
             .lines()
             .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with("Compiling"))
+            .filter(|l| !already_shown.contains(*l))
             .collect();
         for line in meaningful.iter().rev().take(5).rev() {
             result.push_str(&format!("{}\n", line));
@@ -1595,6 +1721,211 @@ test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
         );
         assert!(!result.contains("Compiling"));
         assert!(!result.contains("test utils"));
+    }
+
+    #[test]
+    fn test_filter_cargo_test_all_pass_preserves_compiler_warnings() {
+        let output = r#"   Compiling failproj v0.1.0
+warning: function `unused_helper` is never used
+ --> src/lib.rs:9:4
+  |
+9 | fn unused_helper() -> i32 { 42 }
+  |    ^^^^^^^^^^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `failproj` (lib) generated 1 warning
+    Finished test [unoptimized + debuginfo] target(s) in 0.05s
+     Running unittests src/lib.rs (target/debug/deps/failproj-abc123)
+
+running 3 tests
+test tests::test_pass ... ok
+test tests::test_pass2 ... ok
+test tests::test_pass3 ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+"#;
+        let result = filter_cargo_test(output);
+        assert!(
+            result.contains("unused_helper"),
+            "compiler warning block must survive a passing run, got: {}",
+            result
+        );
+        assert!(
+            result.contains("[1 compiler warnings]"),
+            "summary must carry the warning count, got: {}",
+            result
+        );
+        assert!(result.contains("3 passed"));
+        // Aggregate count line stays stripped
+        assert!(!result.contains("generated 1 warning"));
+    }
+
+    #[test]
+    fn test_filter_cargo_test_compile_error_with_warnings_keeps_errors() {
+        // A captured warning must not mask the compile-error fallback: warnings
+        // are a prefix, not content, so the "nothing to report" check has to
+        // ignore them or a failed build reports warnings and no errors.
+        let output = r#"   Compiling failproj v0.1.0
+warning: function `unused_helper` is never used
+ --> src/lib.rs:9:4
+  |
+9 | fn unused_helper() -> i32 { 42 }
+  |    ^^^^^^^^^^^^^
+  |
+  = note: `#[warn(dead_code)]` on by default
+
+error[E0308]: mismatched types
+  --> src/lib.rs:14:5
+   |
+14 |     "nope"
+   |     ^^^^^^ expected `i32`, found `&str`
+
+error: aborting due to 1 previous error
+"#;
+        let result = filter_cargo_test(output);
+        assert!(
+            result.contains("E0308"),
+            "compile error must survive alongside warnings, got: {}",
+            result
+        );
+        assert!(
+            result.contains("unused_helper"),
+            "warning must still be reported, got: {}",
+            result
+        );
+        // The build fallback renders warning blocks itself — no double report.
+        assert_eq!(
+            result
+                .matches("warning: function `unused_helper` is never used")
+                .count(),
+            1,
+            "warning block must appear exactly once, got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_filter_cargo_test_no_run_does_not_repeat_warnings_in_tail() {
+        // `cargo test --no-run`: warnings, but no "test result:" line and no
+        // errors — the raw-tail fallback must not restate lines the warnings
+        // section already printed.
+        let output = r#"   Compiling failproj v0.1.0
+warning: function `unused_helper` is never used
+ --> src/lib.rs:1:4
+  |
+1 | fn unused_helper() -> i32 {
+  |    ^^^^^^^^^^^^^
+  |
+  = note: `#[warn(dead_code)]` on by default
+
+warning: `failproj` (lib) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
+  Executable unittests src/lib.rs (target/debug/deps/failproj-abc123)
+"#;
+        let result = filter_cargo_test(output);
+        assert_eq!(
+            result
+                .matches("= note: `#[warn(dead_code)]` on by default")
+                .count(),
+            1,
+            "warning line must not appear twice, got: {}",
+            result
+        );
+        assert!(
+            result.contains("unused_helper"),
+            "warning must still be reported, got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_streamed_cargo_test_handler_does_not_repeat_streamed_warnings() {
+        use crate::core::stream::{BlockStreamFilter, StreamFilter};
+        // Warning blocks are streamed live, so the compile-error summary must not
+        // re-render them — otherwise a failed build reports every warning twice.
+        let raw = r#"   Compiling failproj v0.1.0
+warning: function `unused_helper` is never used
+ --> src/lib.rs:1:4
+  |
+1 | fn unused_helper() -> i32 {
+  |    ^^^^^^^^^^^^^
+  |
+  = note: `#[warn(dead_code)]` on by default
+
+error[E0308]: mismatched types
+  --> src/lib.rs:14:5
+   |
+14 |     "nope"
+   |     ^^^^^^ expected `i32`, found `&str`
+
+error: aborting due to 1 previous error
+"#;
+        let mut filter = BlockStreamFilter::new(CargoTestHandler::new());
+        let mut emitted = String::new();
+        for line in raw.lines() {
+            if let Some(out) = filter.feed_line(line) {
+                emitted.push_str(&out);
+            }
+        }
+        emitted.push_str(&filter.flush());
+        let summary = filter.on_exit(0, raw).unwrap_or_default();
+        let combined = format!("{}{}", emitted, summary);
+
+        assert_eq!(
+            combined
+                .matches("warning: function `unused_helper` is never used")
+                .count(),
+            1,
+            "streamed warning must not be repeated by the summary, got: {}",
+            combined
+        );
+        assert!(
+            combined.contains("E0308"),
+            "compile error must still be reported, got: {}",
+            combined
+        );
+    }
+
+    #[test]
+    fn test_streamed_cargo_test_handler_preserves_compiler_warnings() {
+        use crate::core::stream::{BlockStreamFilter, StreamFilter};
+        let lines = [
+            "   Compiling failproj v0.1.0",
+            "warning: function `unused_helper` is never used",
+            " --> src/lib.rs:9:4",
+            "  |",
+            "9 | fn unused_helper() -> i32 { 42 }",
+            "  |    ^^^^^^^^^^^^^",
+            "",
+            "warning: `failproj` (lib) generated 1 warning",
+            "    Finished test [unoptimized + debuginfo] target(s) in 0.05s",
+            "",
+            "running 3 tests",
+            "test tests::test_pass ... ok",
+            "",
+            "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        ];
+        let mut filter = BlockStreamFilter::new(CargoTestHandler::new());
+        let mut emitted = String::new();
+        for line in lines {
+            if let Some(out) = filter.feed_line(line) {
+                emitted.push_str(&out);
+            }
+        }
+        emitted.push_str(&filter.flush());
+        let summary = filter.on_exit(0, "").unwrap_or_default();
+        assert!(
+            emitted.contains("unused_helper"),
+            "warning block must stream through, got: {}",
+            emitted
+        );
+        assert!(
+            summary.contains("[1 compiler warnings]"),
+            "summary must carry warning count, got: {}",
+            summary
+        );
+        assert!(summary.contains("3 passed"));
     }
 
     #[test]
