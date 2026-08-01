@@ -16,6 +16,8 @@ non_utf8_pattern_forwards_original_bytes	fidelity	The wrapped tool receives the 
 non_utf8_arg_to_missing_command_exits_cleanly	fidelity	A non-UTF-8 argument to a command that does not exist exits cleanly instead of aborting.
 pnpm_install_failure_preserves_stdout_error_output	fidelity	Upstream discards the error output of a failed `pnpm install`; the fork preserves it.
 failing_tool_stderr_reaches_the_user	fidelity	Upstream swallows a failing tool's stderr under stdout-only filtering; the fork surfaces it.
+init_dry_run_tolerates_bom_prefixed_settings_json	fidelity	Upstream aborts `rtk init` with a JSON parse error on a UTF-8 BOM-prefixed settings.json (which Notepad and PowerShell 5.1 write by default); the fork strips the BOM and parses it.
+tsc_pipe_filter_compresses_real_pretty_diagnostics	reduction	Upstream's tsc filter doesn't recognize `tsc --noEmit --pretty` diagnostics (ANSI colors, code frames) and passes them through near-unfiltered; the fork parses and compresses them >=60% (measured: rtk's own bytes/4 token estimator, input vs. output, on a real captured 9-diagnostic fixture).
 
 # Deliberately NOT claimed — these are the fork's own regression guards, asserting
 # behaviour upstream also has. They pass on both sides and prove no difference:
