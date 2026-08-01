@@ -28,6 +28,7 @@ A Sync whose merge hits conflicts, meaning fork work and upstream work collided 
 - Upstream covers it at all — code, test, or comment? Take upstream's, verbatim. Do not keep the fork's wording, do not merge the two, do not graft the fork's comment onto upstream's code. "The fork's was better" is not a reason; divergence for its own sake is drift, and drift is what makes every later sync more expensive.
 - Only genuinely **additive** fork code survives a conflict — a capability upstream does not have at all. Before keeping any fork side, prove upstream lacks it (`git show upstream/develop:<file> | grep <symbol>`). A fork fix that upstream has since solved differently is *not* additive; it is a duplicate, and it goes.
 - Additive code adopts upstream's current style even when the fork's still compiles. If upstream migrated the idiom, the surviving fork feature migrates with it.
+- **Fork Infrastructure is the sole exception** — see below. Nothing else overrides upstream's version.
 
 Worked example: merge `e928f0f` (2026-07-28) reverted two resolutions from the merge commit before it, which had kept the fork's comment and test wording on the premise that the fork's `run_in_terminal` handling was additive. Upstream already had it. They were duplicates, and upstream's went back in verbatim.
 
@@ -67,6 +68,52 @@ A PR from the fork to `rtk-ai/rtk`, the only way fork work reaches upstream user
 
 **Contributor outreach**:
 Engaging a community PR author directly — commenting upstream or inviting a PR against the fork — instead of silently adopting or fixing their work. When a contributor opens a PR against the fork, it goes through Fork PR intake.
+
+**Fork Infrastructure**:
+An enumerated set of upstream-owned files carrying fork-only configuration — release tagging, version seed, repo-identity guards. The **sole exception** to _upstream's version wins_: on conflict, keep the fork's edit and re-apply it over upstream's change. Each entry must name why upstream cannot hold it. An entry upstream *could* accept is not Fork Infrastructure — it is an Original fix, and it carries the Upstream PR obligation until merged. The list is enumerated, never a wildcard; an exception that grows by pattern-matching stops being an exception and becomes drift.
+
+Current entries:
+
+| File | Fork edit | Why upstream can't hold it |
+|---|---|---|
+| `.github/workflows/cd.yml` | `fork-` prefix on RC tags; CD gated on CI green | The prefix exists to avoid colliding with upstream's own tags — meaningless in upstream |
+| `release-please-config.json` (master only) | `fork-v` tag prefix | Same |
+| `.release-please-manifest.json` (master only) | version seed for the fork's own numbering | The fork's version line is not upstream's |
+
+`.github/workflows/release.yml`'s repo guard on the Discord and Homebrew jobs is **not** Fork Infrastructure — a fork should never be able to write to upstream's tap, so upstream can hold it. It is an Original fix with the Upstream PR obligation attached.
+
+**Release track**:
+The fork publishes on two. **RC** — every push to `develop` builds `fork-dev-X.Y.Z-rc.N`, automatic and continuous, for the maintainer and anyone wanting the tip. **Stable** — `fork-vX.Y.Z`, cut by merging the accumulated `develop → master` PR when the maintainer judges there is enough, and the only track a visitor is pointed at. Fork versions restart at `0.1.0` and never track upstream's numbers; the upstream base is stated in the release notes, never encoded in the version.
+_Avoid_: pre-release (ambiguous — upstream uses it for its own `dev-*` tags)
+
+**master**:
+A release branch only, advanced solely by `develop → master` merges. It carries the fork's version line and release history and is never developed on, never synced into. Not dead — dormant between releases.
+
+## Public identity
+
+The fork is public but unadvertised. A visitor arrives knowing nothing — not what rtk is, and not that a fork exists — so the landing page teaches rtk first, the fork second. Everything below exists to make that page true.
+
+**Landing page**:
+`.github/README.md`, which GitHub resolves ahead of the root README. It owns the pitch and the Delta; upstream's `README.md` owns the reference. Anything that is a fact about rtk's commands is **linked, never copied**, so there is nothing that can rot. Root `README.md` stays byte-identical to upstream — it is not Fork Infrastructure and gets no banner.
+
+**Delta**:
+What this fork has that upstream does not, computed from `upstream/develop..origin/develop` — never maintained by hand. Complete: every fork commit is in scope. Entries **vanish** when upstream merges them, and that shrinkage is the fork working as intended, not value lost. The Delta names no contributors (see Attribution).
+
+**Attribution**:
+Git authorship is mandatory and permanent — it is what cherry-pick-over-squash exists to protect, and it satisfies Apache 2.0. A **published credits list is a different thing**: a claim about participation. Adopted authors wrote their PRs against upstream and never contributed here, so the Delta credits the **upstream PR**, not the person; a reader who wants the author clicks through to where they chose to be public. Only someone who opened a PR against the fork directly is named as a fork contributor.
+
+**Proof suite**:
+The fork's portable integration tests — `std`-only, reaching the binary through `CARGO_BIN_EXE_rtk` — run against an `upstream/develop` checkout. Green here and red there is the proof. A **subset** of the Delta, never all of it: fixes covered only by `src/**` unit tests cannot be lifted into upstream's tree, and the landing page states the proven count as smaller than the claimed count rather than blurring them. Doubles as a caught-up detector — a test that goes green upstream means the fix landed there and the fork can drop the divergence.
+
+**Claim**:
+An assertion on the landing page. **No claim without a test behind it.** Two classes, never mixed:
+
+- **Fidelity claim** — upstream drops information; the fork keeps it. The fork's output is *larger*, and that is the point. Proof is the test that fails upstream.
+- **Reduction claim** — upstream passes output through unfiltered; the fork filters it. Proof is a measured byte delta against the repo's ≥60% floor.
+
+Most fork fixes are fidelity, not reduction. **The fork does not claim token savings over upstream as its value proposition** — savings are upstream's pitch, fidelity is the fork's, and reduction is claimed only where individually measured. A fork fix that makes output bigger is a fix, not a regression.
+
+**Gate the claim, not the adoption.** A fix with no portable test still lands and still appears in the Delta; it simply gets no row in the Proof suite. Adoption acquires no new gate.
 
 ## Fork PR intake
 
