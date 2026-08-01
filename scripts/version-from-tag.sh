@@ -16,14 +16,23 @@
 #        scripts/version-from-tag.sh --test
 set -euo pipefail
 
-# fork-dev-0.1.0-rc.9 -> 0.1.0-rc.9    fork-v0.1.0 -> 0.1.0
-# dev-0.44.2-rc.344   -> 0.44.2-rc.344 v0.44.1     -> 0.44.1
+# fork-dev-0.1.0-rc.9 -> 0.1.0+rc.9    fork-v0.1.0 -> 0.1.0
+# dev-0.44.2-rc.344   -> 0.44.2+rc.344 v0.44.1     -> 0.44.1
+#
+# The pre-release marker becomes `+rc.N` (semver build metadata) rather than
+# `-rc.N` (semver pre-release), because RPM forbids `-` in a version:
+#
+#   invalid version "0.1.0-rc.10": contains invalid character
+#   (allowed: alphanumeric, '.', '_', '+', '%', '{', '}', '~', '^')
+#
+# `+` is legal in all three: semver, Debian, and RPM. `~` would suit RPM and
+# Debian better (it sorts before the release) but cargo rejects it outright.
 version_from_tag() {
   local v="$1"
   v="${v#fork-}"
   v="${v#dev-}"
   v="${v#v}"
-  printf '%s' "$v"
+  printf '%s' "$v" | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+)-(.+)$/\1+\2/'
 }
 
 if [ "${1:-}" = "--test" ]; then
@@ -38,10 +47,10 @@ if [ "${1:-}" = "--test" ]; then
       fail=1
     fi
   }
-  check "fork-dev-0.1.0-rc.9" "0.1.0-rc.9"
+  check "fork-dev-0.1.0-rc.9" "0.1.0+rc.9"
   check "fork-v0.1.0"         "0.1.0"
   check "fork-v1.2.3"         "1.2.3"
-  check "dev-0.44.2-rc.344"   "0.44.2-rc.344"
+  check "dev-0.44.2-rc.344"   "0.44.2+rc.344"
   check "v0.44.1"             "0.44.1"
   exit $fail
 fi
@@ -53,7 +62,7 @@ VERSION="$(version_from_tag "$TAG")"
 
 # Refuse anything cargo would reject, rather than corrupting the manifest and
 # failing later with a confusing parse error.
-if ! printf '%s' "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+if ! printf '%s' "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(\+[0-9A-Za-z.]+)?$'; then
   echo "::error::Tag '$TAG' does not yield a semver version (got '$VERSION')" >&2
   exit 1
 fi
@@ -62,7 +71,20 @@ fi
 
 # Only the first `version =` — that is the [package] one. Dependency versions
 # appear later in the file and must not be touched.
-sed -i "0,/^version = \".*\"/s//version = \"${VERSION}\"/" "$MANIFEST"
+#
+# awk rather than sed, for two separate portability reasons on macOS runners:
+# BSD sed reads the argument after -i as a backup suffix (the GNU form fails with
+# `sed: 1: "Cargo.toml`), and the `0,/re/` address range used to match only the
+# first occurrence is a GNU extension that BSD sed rejects outright.
+awk -v v="$VERSION" '
+  !done && /^version = "/ {
+    print "version = \"" v "\""
+    done = 1
+    next
+  }
+  { print }
+' "$MANIFEST" > "${MANIFEST}.tmp"
+mv "${MANIFEST}.tmp" "$MANIFEST"
 
 STAMPED="$(grep -m1 '^version = ' "$MANIFEST" | sed 's/version = "\(.*\)"/\1/')"
 if [ "$STAMPED" != "$VERSION" ]; then
