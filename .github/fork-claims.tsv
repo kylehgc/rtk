@@ -18,6 +18,8 @@ pnpm_install_failure_preserves_stdout_error_output	fidelity	Upstream discards th
 failing_tool_stderr_reaches_the_user	fidelity	Upstream swallows a failing tool's stderr under stdout-only filtering; the fork surfaces it.
 init_dry_run_tolerates_bom_prefixed_settings_json	fidelity	Upstream aborts `rtk init` with a JSON parse error on a UTF-8 BOM-prefixed settings.json (which Notepad and PowerShell 5.1 write by default); the fork strips the BOM and parses it.
 tsc_pipe_filter_compresses_real_pretty_diagnostics	reduction	Upstream's tsc filter doesn't recognize `tsc --noEmit --pretty` diagnostics (ANSI colors, code frames) and passes them through near-unfiltered; the fork parses and compresses them >=60% (measured: rtk's own bytes/4 token estimator, input vs. output, on a real captured 9-diagnostic fixture).
+git_log_patch_preserves_diff_hunks	fidelity	Upstream drops the diff hunks from `git log -p`, keeping only a 3-line-capped commit summary; the fork passes the real patch through.
+git_log_stat_keeps_every_commit	fidelity	Upstream's `git log --stat` loses commits whose diffstat pushes the next commit's header out of its 3-line body cap; the fork keeps every commit.
 
 # Deliberately NOT claimed — these are the fork's own regression guards, asserting
 # behaviour upstream also has. They pass on both sides and prove no difference:
