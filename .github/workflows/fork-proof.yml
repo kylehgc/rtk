@@ -38,6 +38,9 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Ensure ripgrep is present
+        run: command -v rg || (sudo apt-get update && sudo apt-get install -y ripgrep)
+
       - name: Run proof suite
         run: bash scripts/fork-proof.sh
 
