@@ -90,6 +90,12 @@ fn cargo_test_preserves_compiler_warnings_on_passing_run() {
     let out = Command::new(env!("CARGO_BIN_EXE_rtk"))
         .args(["cargo", "test"])
         .current_dir(dir.path())
+        // CI exports CARGO_TERM_COLOR=always (ci.yml, global env), and the nested
+        // cargo inherits it. rtk's warning capture matches plain `warning:` lines,
+        // so ANSI-wrapped ones slip past it and the output degenerates to the
+        // upstream shape — the test then fails for an environmental reason, not
+        // the behavioral difference it exists to prove. Pin color off.
+        .env("CARGO_TERM_COLOR", "never")
         .output()
         .expect("run rtk cargo test");
     // The live-streamed warning block is written to whichever fd fed it (cargo's own
@@ -134,6 +140,10 @@ fn piped_cargo_test_filter_does_not_restate_captured_warnings() {
     let raw_out = Command::new("cargo")
         .args(["test", "--no-run"])
         .current_dir(dir.path())
+        // Same CARGO_TERM_COLOR=never pin as above: this raw text feeds the filter
+        // via stdin, and the dup-marker count below does exact string matching that
+        // ANSI wrapping would break.
+        .env("CARGO_TERM_COLOR", "never")
         .output()
         .expect("run cargo test --no-run");
     let raw = format!(
