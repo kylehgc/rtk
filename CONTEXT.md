@@ -80,7 +80,13 @@ Current entries:
 | `release-please-config.json` (master only) | `fork-v` tag prefix | Same |
 | `.release-please-manifest.json` (master only) | version seed for the fork's own numbering | The fork's version line is not upstream's |
 
-`.github/workflows/release.yml`'s repo guard on the Discord and Homebrew jobs is **not** Fork Infrastructure — a fork should never be able to write to upstream's tap, so upstream can hold it. It is an Original fix with the Upstream PR obligation attached.
+Three edits to `release.yml` and `next-release.yml` are deliberately **not** Fork Infrastructure, because upstream can hold them and benefits from them — they are Original fixes, each carrying the Upstream PR obligation:
+
+- the repo guard on the Discord and Homebrew jobs (a fork must never be able to write to upstream's tap or announce in upstream's Discord),
+- the GitHub App token falling back to `GITHUB_TOKEN` when no App is installed (without it, the entire release run fails on any fork),
+- the `permissions` block `next-release.yml` needs for that fallback to have any rights at all.
+
+The distinction is the test, not the file: an edit lands in the table above only when upstream would have no reason to want it.
 
 **Release track**:
 The fork publishes on two. **RC** — every push to `develop` builds `fork-dev-X.Y.Z-rc.N`, automatic and continuous, for the maintainer and anyone wanting the tip. **Stable** — `fork-vX.Y.Z`, cut by merging the accumulated `develop → master` PR when the maintainer judges there is enough, and the only track a visitor is pointed at. Fork versions restart at `0.1.0` and never track upstream's numbers; the upstream base is stated in the release notes, never encoded in the version.

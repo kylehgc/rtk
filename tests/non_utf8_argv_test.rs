@@ -22,6 +22,11 @@ fn os(bytes: &[u8]) -> OsString {
 fn rtk(args: &[OsString]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_rtk"))
         .args(args)
+        // Same locale as the native grep we compare against. BSD grep is byte-oriented
+        // under C but rejects invalid UTF-8 patterns with "illegal byte sequence" under
+        // a UTF-8 locale, so without this the two sides run under different rules and
+        // the comparison fails on macOS. GNU grep is insensitive to it either way.
+        .env("LC_ALL", "C")
         .output()
         .expect("rtk")
 }

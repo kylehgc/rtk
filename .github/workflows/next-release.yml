@@ -5,15 +5,22 @@ on:
     types: [closed]
     branches: [develop]
 
-permissions: {}
+# Scoped for the GITHUB_TOKEN fallback below. The App token, where one is
+# installed, carries its own permissions and ignores these.
+permissions:
+  contents: read
+  pull-requests: write
 
 jobs:
   update-next-release:
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
+      # Forks have no App installed, so this step fails there. Let it, and fall back
+      # to GITHUB_TOKEN below, which the permissions block above scopes to match.
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         id: app-token
+        continue-on-error: true
         with:
           client-id: ${{ secrets.APP_CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
@@ -22,7 +29,7 @@ jobs:
 
       - name: Update Next Release PR
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_URL: ${{ github.event.pull_request.html_url }}
