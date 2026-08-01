@@ -19,6 +19,12 @@ UPSTREAM_REF="${UPSTREAM_REF:-upstream/develop}"
 PAGE="${PAGE:-.github/README.md}"
 CLAIMS="${CLAIMS:-.github/fork-claims.tsv}"
 WORKTREE="${WORKTREE:-$(mktemp -d -t rtk-upstream-XXXXXX)}"
+
+# Tool-availability guards must fail, never skip, inside a proof run: a test
+# that skips still prints "ok", and this script would record its claim as
+# proven when nothing ran. Enforced here rather than only in fork-proof.yml so
+# a local run of this script gets the same rigor.
+export RTK_PROOF_REQUIRE_RG=1
 START="<!-- FORK_PROOF_START -->"
 END="<!-- FORK_PROOF_END -->"
 

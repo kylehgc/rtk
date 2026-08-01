@@ -38,7 +38,14 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Ensure ripgrep is present
+        run: command -v rg || (sudo apt-get update && sudo apt-get install -y ripgrep)
+
       - name: Run proof suite
+        env:
+          # Hard-fail (never skip) tests whose external tool is missing: a skip
+          # in the proof run records a claim as proven when nothing ran.
+          RTK_PROOF_REQUIRE_RG: "1"
         run: bash scripts/fork-proof.sh
 
       - name: Commit if changed
