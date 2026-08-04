@@ -276,6 +276,32 @@ fn main() {{
     }
 
     #[test]
+    fn test_head_truncate_is_literal_contiguous_prefix() {
+        // rtk-ai/rtk#3046: the old smart_truncate pulled "important" lines (a
+        // bare `}`, exports) from far past the window into a head -N view,
+        // fabricating false adjacency. A head window must be the literal
+        // first N lines — nothing from beyond the window, ever.
+        let mut lines: Vec<String> = (1..=60).map(|i| format!("alias thing_{i}='x'")).collect();
+        lines.push("}".to_string());
+        lines.push("more content".to_string());
+        let content = lines.join("\n");
+
+        let output = head_truncate(&content, 30);
+
+        assert!(
+            !output.lines().any(|l| l.trim() == "}"),
+            "line from beyond the window must not be pulled in:\n{output}"
+        );
+        let expected: Vec<&str> = content.lines().take(30).collect();
+        let kept: Vec<&str> = output
+            .lines()
+            .filter(|l| !l.contains("more lines"))
+            .collect();
+        assert_eq!(kept, expected, "window must be the literal first 30 lines");
+        assert!(output.ends_with("[32 more lines]"));
+    }
+
+    #[test]
     fn test_head_truncate_plain_text_exact_count() {
         // Repro from #3370: plain lines must not be halved.
         let content: String = (0..3000)
