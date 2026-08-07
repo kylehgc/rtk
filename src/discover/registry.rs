@@ -1364,6 +1364,9 @@ fn rewrite_segment_inner(
     if context == RewriteContext::Normal
         && (cmd_part.starts_with("head -") || cmd_part.starts_with("tail "))
     {
+        if is_excluded(cmd_part, excluded) {
+            return None;
+        }
         return rewrite_line_range(cmd_part).map(|r| format!("{}{}", r, redirect_suffix));
     }
 
@@ -4842,6 +4845,58 @@ mod tests {
     fn test_exclude_bare_anchor_ignored() {
         let excluded = vec!["^".to_string()];
         assert!(rewrite_command_no_prefixes("git status", &excluded).is_some());
+    }
+
+    // --- exclude_commands on head/tail rewrites (#2363) ---
+
+    #[test]
+    fn test_exclude_head_line_range_rewrite() {
+        let excluded = vec!["head".to_string()];
+        assert_eq!(
+            rewrite_command_no_prefixes("head -20 package.json", &excluded),
+            None
+        );
+    }
+
+    #[test]
+    fn test_exclude_tail_line_range_rewrite() {
+        let excluded = vec!["tail".to_string()];
+        assert_eq!(
+            rewrite_command_no_prefixes("tail -n 50 app.log", &excluded),
+            None
+        );
+    }
+
+    #[test]
+    fn test_head_still_rewrites_when_not_excluded() {
+        let excluded = vec!["curl".to_string()];
+        assert_eq!(
+            rewrite_command_no_prefixes("head -20 package.json", &excluded),
+            Some("rtk read package.json --max-lines 20".into())
+        );
+    }
+
+    #[test]
+    fn test_exclude_head_with_redirect_suffix() {
+        // Exclusion must apply to the command part, ignoring trailing redirects
+        let excluded = vec!["head".to_string()];
+        assert_eq!(
+            rewrite_command_no_prefixes("head -20 package.json 2>&1", &excluded),
+            None
+        );
+    }
+
+    #[test]
+    fn test_exclude_tail_line_range_raw_regex_pattern() {
+        // compile_exclude_patterns has two branches: a bare name is escaped and
+        // anchored into `^name($|\s)`, while a `^`-prefixed pattern is compiled
+        // raw. The cases above only reach the escaped branch — this drives the
+        // raw one into the same fast path (upstream #3109).
+        let excluded = vec!["^tail -n".to_string()];
+        assert_eq!(
+            rewrite_command_no_prefixes("tail -n 400 /var/log/foo.log", &excluded),
+            None
+        );
     }
 
     #[test]
