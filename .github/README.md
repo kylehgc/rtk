@@ -48,13 +48,14 @@ output *larger* and more correct. This fork does not claim to save more tokens t
 upstream — that is upstream's pitch. It claims to not lose your errors.
 
 <!-- FORK_DELTA_START -->
-**38 fixes in this fork that upstream does not have.** Each links to the commit,
+**39 fixes in this fork that upstream does not have.** Each links to the commit,
 where the original author is recorded. Adopted fixes come from community PRs that upstream
 has not merged — see the [adoption issues](https://github.com/kylehgc/rtk/issues?q=is%3Aissue+Adopt+upstream)
 for provenance.
 
 | Fix | Commit |
 |---|---|
+| fix(read): honor --max-lines N as exact head count | [`653fb56`](https://github.com/kylehgc/rtk/commit/653fb56) |
 | fix(grep): stop -l/-m/-t shadowing native grep flags | [`0704f58`](https://github.com/kylehgc/rtk/commit/0704f58) |
 | fix(js): preserve failed command output in parser fallbacks | [`723bea4`](https://github.com/kylehgc/rtk/commit/723bea4) |
 | fix(proof): enforce tool-required guards inside the script itself | [`6fb87aa`](https://github.com/kylehgc/rtk/commit/6fb87aa) |
