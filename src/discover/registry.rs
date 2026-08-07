@@ -4887,6 +4887,19 @@ mod tests {
     }
 
     #[test]
+    fn test_exclude_tail_line_range_raw_regex_pattern() {
+        // compile_exclude_patterns has two branches: a bare name is escaped and
+        // anchored into `^name($|\s)`, while a `^`-prefixed pattern is compiled
+        // raw. The cases above only reach the escaped branch — this drives the
+        // raw one into the same fast path (upstream #3109).
+        let excluded = vec!["^tail -n".to_string()];
+        assert_eq!(
+            rewrite_command_no_prefixes("tail -n 400 /var/log/foo.log", &excluded),
+            None
+        );
+    }
+
+    #[test]
     fn test_all_patterns_are_valid_regex() {
         use regex::Regex;
         for (i, rule) in RULES.iter().enumerate() {
