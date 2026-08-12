@@ -56,14 +56,12 @@ fi
 # under a different SHA. `git cherry` cannot do this here (after every sync
 # upstream/develop is an ancestor of HEAD, so its side of the symmetric
 # difference is empty); match stable patch-ids against upstream's own history.
-declare -A healed_auto
-while read -r _pid sha; do
-  [ -n "$sha" ] && healed_auto[$sha]=1
-done < <(
-  awk 'NR==FNR {seen[$1]=1; next} $1 in seen {print}' \
+# Newline-delimited full SHAs (not an associative array: macOS system bash is 3.2)
+healed_auto=$'\n'"$(
+  awk 'NR==FNR {seen[$1]=1; next} $1 in seen {print $2}' \
     <(git log --no-merges -p --since="$UPSTREAM_SINCE" "$UPSTREAM_REF" | git patch-id --stable) \
     <(git log --no-merges -p "$UPSTREAM_REF..HEAD" | git patch-id --stable)
-)
+)"$'\n'
 
 rows=""
 count=0
@@ -71,7 +69,7 @@ dropped_auto=0
 dropped_audit=0
 while IFS=$'\t' read -r full sha subject; do
   [ -n "$sha" ] || continue
-  if [ -n "${healed_auto[$full]:-}" ]; then
+  if [[ "$healed_auto" == *$'\n'"$full"$'\n'* ]]; then
     dropped_auto=$((dropped_auto + 1))
     continue
   fi
