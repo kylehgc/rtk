@@ -67,19 +67,20 @@ rows=""
 count=0
 dropped_auto=0
 dropped_audit=0
-while IFS=$'\t' read -r full sha subject; do
-  [ -n "$sha" ] || continue
+while IFS=$'\t' read -r full short subject; do
+  [ -n "$short" ] || continue
   if [[ "$healed_auto" == *$'\n'"$full"$'\n'* ]]; then
     dropped_auto=$((dropped_auto + 1))
     continue
   fi
-  for h in "${HEALED_SHAS[@]}"; do
+  # ${arr[@]+...} guard: expanding an empty array trips set -u on bash <4.4
+  for h in ${HEALED_SHAS[@]+"${HEALED_SHAS[@]}"}; do
     if [[ "$full" == "$h"* ]]; then
       dropped_audit=$((dropped_audit + 1))
       continue 2
     fi
   done
-  rows+="| ${subject} | [\`${sha}\`](${REPO_URL}/commit/${sha}) |"$'\n'
+  rows+="| ${subject} | [\`${short}\`](${REPO_URL}/commit/${short}) |"$'\n'
   count=$((count + 1))
 done < <(
   git log "$UPSTREAM_REF..HEAD" --no-merges --format='%H%x09%h%x09%s' \
