@@ -415,7 +415,16 @@ fn copilot_cli_response_from_decision(
 pub fn run_gemini() -> Result<()> {
     let input = read_stdin_limited()?;
 
-    let json: Value = serde_json::from_str(&input).context("Failed to parse hook input as JSON")?;
+    // Fail open on empty input (EOF or stdin timeout), like every other
+    // runner: without this guard the serde parse fails and the hook exits
+    // nonzero, blocking the tool call it gates.
+    let input = input.trim();
+    if input.is_empty() {
+        print_allow();
+        return Ok(());
+    }
+
+    let json: Value = serde_json::from_str(input).context("Failed to parse hook input as JSON")?;
 
     let tool_name = json.get("tool_name").and_then(|v| v.as_str()).unwrap_or("");
 

@@ -77,3 +77,43 @@ fn claude_hook_fails_open_when_stdin_stays_open_without_payload() {
         thread::sleep(Duration::from_millis(25));
     }
 }
+
+#[test]
+fn gemini_hook_fails_open_when_stdin_stays_open_without_payload() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rtk"))
+        .args(["hook", "gemini"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn rtk hook gemini");
+
+    let stdin = child.stdin.take().expect("child stdin");
+    let deadline = Instant::now() + Duration::from_secs(3);
+
+    loop {
+        if child.try_wait().expect("poll child").is_some() {
+            drop(stdin);
+            let output = child.wait_with_output().expect("collect hook output");
+            assert!(
+                output.status.success(),
+                "hook should fail open with exit 0, got {:?}, stderr={}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            // Gemini's protocol expects a JSON response; fail-open is allow.
+            let response: serde_json::Value =
+                serde_json::from_slice(&output.stdout).expect("gemini JSON response");
+            assert_eq!(response["decision"], "allow");
+            return;
+        }
+
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("rtk hook gemini blocked on open stdin without payload");
+        }
+
+        thread::sleep(Duration::from_millis(25));
+    }
+}
