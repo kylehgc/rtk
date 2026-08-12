@@ -48,10 +48,15 @@ output *larger* and more correct. This fork does not claim to save more tokens t
 upstream — that is upstream's pitch. It claims to not lose your errors.
 
 <!-- FORK_DELTA_START -->
-**41 fixes in this fork that upstream does not have.** Each links to the commit,
+**35 fixes in this fork that upstream does not have.** Each links to the commit,
 where the original author is recorded. Adopted fixes come from community PRs that upstream
 has not merged — see the [adoption issues](https://github.com/kylehgc/rtk/issues?q=is%3Aissue+Adopt+upstream)
 for provenance.
+
+This count is an upper bound: fixes upstream has since merged verbatim are dropped
+automatically by patch-id, and audited equivalents are excluded by hand
+(`scripts/fork-delta.sh`) — but pending the next audit, an entry may already exist
+upstream in another form.
 
 | Fix | Commit |
 |---|---|
@@ -74,7 +79,6 @@ for provenance.
 | fix(search): spare value tokens from the rg -r/-R letter strip | [`d43cef5`](https://github.com/kylehgc/rtk/commit/d43cef5) |
 | fix(search): strip ripgrep -r/-R so rg --replace no longer corrupts output | [`00d8ee4`](https://github.com/kylehgc/rtk/commit/00d8ee4) |
 | fix(hook): accept current Claude tool input keys | [`c8d6e28`](https://github.com/kylehgc/rtk/commit/c8d6e28) |
-| fix(hook): detect Copilot CLI shell tool on Windows | [`673ad19`](https://github.com/kylehgc/rtk/commit/673ad19) |
 | fix(init): strip UTF-8 BOM when parsing hand-edited JSON config files | [`4e1ae5c`](https://github.com/kylehgc/rtk/commit/4e1ae5c) |
 | feat(init): add PowerShell hook for Claude Code on Windows | [`cc5b6d3`](https://github.com/kylehgc/rtk/commit/cc5b6d3) |
 | feat(mvn): add rtk mvnd support for Maven Daemon | [`fa55089`](https://github.com/kylehgc/rtk/commit/fa55089) |
@@ -85,16 +89,11 @@ for provenance.
 | fix(hook): hook warning repeats on every command on Windows | [`8945b96`](https://github.com/kylehgc/rtk/commit/8945b96) |
 | fix(discover): sanitize drive-letter colon so Windows discover finds sessions | [`f0c7d5d`](https://github.com/kylehgc/rtk/commit/f0c7d5d) |
 | fix(hooks): add -- terminator to hermes, opencode, and pi rewrite callers | [`8253401`](https://github.com/kylehgc/rtk/commit/8253401) |
-| fix(hook): prevent flag injection in rtk-rewrite hooks (#1350) | [`7db14a3`](https://github.com/kylehgc/rtk/commit/7db14a3) |
 | fix(cli): handle non-UTF-8 argv in raw-execution fallback | [`22990e9`](https://github.com/kylehgc/rtk/commit/22990e9) |
 | fix(runner): surface a failing tool's stderr under stdout-only filtering | [`c27bbd0`](https://github.com/kylehgc/rtk/commit/c27bbd0) |
-| fix(hooks): make pipe-skip normalization match the rewrite path | [`e1e37fd`](https://github.com/kylehgc/rtk/commit/e1e37fd) |
-| fix(hooks): don't rewrite pipe-feeding segments whose filter changes output shape | [`e95207d`](https://github.com/kylehgc/rtk/commit/e95207d) |
 | fix(core): map code page 54936 to GB18030 instead of GBK | [`7ead416`](https://github.com/kylehgc/rtk/commit/7ead416) |
 | fix(core): use windows-sys crate for code page detection, fix CI test | [`0462da2`](https://github.com/kylehgc/rtk/commit/0462da2) |
 | fix(core): decode process output using Windows console code page | [`13cf995`](https://github.com/kylehgc/rtk/commit/13cf995) |
-| fix(stream): log stream read errors instead of silently stopping | [`bfce39e`](https://github.com/kylehgc/rtk/commit/bfce39e) |
-| fix(stream): decode lossily instead of dropping lines on invalid UTF-8 | [`c35968f`](https://github.com/kylehgc/rtk/commit/c35968f) |
 | fix(hook): emit ask decision for Claude rewrites | [`e93cde8`](https://github.com/kylehgc/rtk/commit/e93cde8) |
 
 <!-- FORK_DELTA_END -->
