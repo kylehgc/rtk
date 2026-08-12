@@ -48,7 +48,7 @@ output *larger* and more correct. This fork does not claim to save more tokens t
 upstream — that is upstream's pitch. It claims to not lose your errors.
 
 <!-- FORK_DELTA_START -->
-**35 fixes in this fork that upstream does not have.** Each links to the commit,
+**37 fixes in this fork that upstream does not have.** Each links to the commit,
 where the original author is recorded. Adopted fixes come from community PRs that upstream
 has not merged — see the [adoption issues](https://github.com/kylehgc/rtk/issues?q=is%3Aissue+Adopt+upstream)
 for provenance.
@@ -60,6 +60,8 @@ upstream in another form.
 
 | Fix | Commit |
 |---|---|
+| fix(hook): make gemini runner fail open on empty stdin | [`cf976df`](https://github.com/kylehgc/rtk/commit/cf976df) |
+| fix(hook): fail open when stdin payload stalls | [`04f881a`](https://github.com/kylehgc/rtk/commit/04f881a) |
 | fix(hooks): apply exclude_commands to the resolved tool, not just raw text | [`6871925`](https://github.com/kylehgc/rtk/commit/6871925) |
 | fix(hook): apply exclude_commands to head/tail rewrites | [`8a27c09`](https://github.com/kylehgc/rtk/commit/8a27c09) |
 | fix(read): honor --max-lines N as exact head count | [`653fb56`](https://github.com/kylehgc/rtk/commit/653fb56) |
