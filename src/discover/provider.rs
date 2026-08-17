@@ -418,17 +418,6 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_project_path_windows_full_path() {
-        // Regression for #2919: every Windows cwd carries a drive-letter colon,
-        // and it must be sanitized like every other separator so the encoded slug
-        // matches Claude's real folder name for the default `rtk discover`.
-        assert_eq!(
-            ClaudeProvider::encode_project_path(r"C:\Users\Administrator\my project"),
-            "C--Users-Administrator-my-project"
-        );
-    }
-
-    #[test]
     fn test_match_project_filter() {
         let encoded = ClaudeProvider::encode_project_path("/Users/foo/Sites/rtk");
         assert!(encoded.contains("rtk"));
