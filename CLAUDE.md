@@ -8,61 +8,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a fork with critical fixes for git argument parsing and modern JavaScript stack support (pnpm, vitest, Next.js, TypeScript, Playwright, Prisma).
 
-### Name Collision Warning
-
-**Two different "rtk" projects exist:**
-- This project: Rust Token Killer (rtk-ai/rtk)
-- reachingforthejack/rtk: Rust Type Kit (DIFFERENT - generates Rust types)
-
-**Verify correct installation:**
-```bash
-rtk --version  # Should show "rtk 0.28.2" (or newer)
-rtk gain       # Should show token savings stats (NOT "command not found")
-```
-
-If `rtk gain` fails, you have the wrong package installed.
+Name collision: reachingforthejack/rtk ("Rust Type Kit") is a DIFFERENT project. If `rtk gain` fails with "command not found", the wrong rtk is installed.
 
 ## Development Commands
 
-> **Note**: If rtk is installed, prefer `rtk <cmd>` over raw commands for token-optimized output.
-> All commands work with passthrough support even for subcommands rtk doesn't specifically handle.
+Standard cargo workflow (`cargo build / test / clippy / fmt`); prefer `rtk <cmd>` over raw commands when rtk is installed. Non-obvious extras:
 
-### Build & Run
 ```bash
-cargo build                   # raw
-rtk cargo build               # preferred (token-optimized)
-cargo build --release         # release build (optimized)
-cargo run -- <command>        # run directly
-cargo install --path .        # install locally
-```
-
-### Testing
-```bash
-cargo test                    # all tests
-rtk cargo test                # preferred (token-optimized)
-cargo test <test_name>        # specific test
-cargo test <module_name>::    # module tests
-cargo test -- --nocapture     # with stdout
 bash scripts/test-all.sh      # smoke tests (installed binary required)
-```
-
-### Linting & Quality
-```bash
-cargo check                   # check without building
-cargo fmt                     # format code
-cargo clippy --all-targets    # all clippy lints
-rtk cargo clippy --all-targets # preferred
+cargo deb                     # DEB package (needs cargo-deb)
+cargo generate-rpm            # RPM package (needs cargo-generate-rpm, after release build)
 ```
 
 ### Pre-commit Gate
 ```bash
 cargo fmt --all && cargo clippy --all-targets && cargo test --all
-```
-
-### Package Building
-```bash
-cargo deb                     # DEB package (needs cargo-deb)
-cargo generate-rpm            # RPM package (needs cargo-generate-rpm, after release build)
 ```
 
 ## Architecture
@@ -74,28 +34,6 @@ For the full architecture, component details, and module development patterns, s
 - [docs/contributing/TECHNICAL.md](docs/contributing/TECHNICAL.md) — End-to-end flow, folder map, hook system, filter pipeline
 
 Module responsibilities are documented in each folder's `README.md` and each file's `//!` doc header. Browse `src/cmds/*/` to discover available filters.
-
-Supported ecosystems: git/gh/gt, cargo, go/golangci-lint, npm/pnpm/npx, ruff/pytest/pip/mypy, rspec/rubocop/rake, dotnet, playwright/vitest/jest, docker/kubectl/aws, gradlew/mvn, php/artisan/phpunit/phpstan/pest.
-
-### Proxy Mode
-
-**Purpose**: Execute commands without filtering but track usage for metrics.
-
-**Usage**: `rtk proxy <command> [args...]`
-
-**Benefits**:
-- **Bypass RTK filtering**: Workaround bugs or get full unfiltered output
-- **Track usage metrics**: Measure which commands Claude uses most (visible in `rtk gain --history`)
-- **Guaranteed compatibility**: Always works even if RTK doesn't implement the command
-
-**Examples**:
-```bash
-rtk proxy git log --oneline -20    # Full git log output (no truncation)
-rtk proxy npm install express      # Raw npm output (no filtering)
-rtk proxy curl https://api.example.com/data  # Any command works
-```
-
-All proxy commands appear in `rtk gain --history` with 0% bash output reduction (input = output).
 
 ## Coding Rules
 

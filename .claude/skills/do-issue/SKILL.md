@@ -356,6 +356,32 @@ git checkout develop && git pull origin develop
 git log --format='%h %an' -4          # contributor's name must still be there
 ```
 
+### Refresh the installed binary
+
+The active `rtk` on this machine is `~/bin/rtk.exe`, **not** `~/.cargo/bin` (cargo is off
+PATH — `cargo install` would install to a dead location). A stale binary silently corrupts
+piped command output for every later session: on 2026-08-12 an installed build one day older
+than the pipeline-redesign sync rewrote pipeline producers (`git log | wc -l` →
+`rtk git log | wc -l`) and fed truncated/capped git log output into pipe consumers, making
+six commits look absent during an investigation. Version strings don't prove freshness —
+the stale binary reported the same `0.42.4`.
+
+After any merge that changed `src/**`, rebuild and swap (from PowerShell, with the
+win-dev-env loaded):
+
+```powershell
+. .\scripts\win-dev-env.ps1
+cargo build --release
+Copy-Item "$env:USERPROFILE\bin\rtk.exe" "$env:USERPROFILE\bin\rtk.exe.bak" -Force
+Copy-Item "target\x86_64-pc-windows-msvc\release\rtk.exe" "$env:USERPROFILE\bin\rtk.exe" -Force
+```
+
+Health check — pipeline producers must stay raw:
+
+```bash
+rtk rewrite "git log | wc -l"   # healthy: exit 1 (no rewrite); stale: rewrites the producer
+```
+
 ---
 
 ## Phase 7 — Original fix: the part that is easy to forget
