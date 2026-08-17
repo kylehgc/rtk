@@ -48,7 +48,7 @@ output *larger* and more correct. This fork does not claim to save more tokens t
 upstream — that is upstream's pitch. It claims to not lose your errors.
 
 <!-- FORK_DELTA_START -->
-**34 fixes in this fork that upstream does not have.** Each links to the commit,
+**36 fixes in this fork that upstream does not have.** Each links to the commit,
 where the original author is recorded. Adopted fixes come from community PRs that upstream
 has not merged — see the [adoption issues](https://github.com/kylehgc/rtk/issues?q=is%3Aissue+Adopt+upstream)
 for provenance.
@@ -60,6 +60,8 @@ upstream in another form.
 
 | Fix | Commit |
 |---|---|
+| fix(diff): align by LCS instead of comparing line N to line N | [`54cb3a1`](https://github.com/kylehgc/rtk/commit/54cb3a1) |
+| fix(diff): compare bytes before claiming two files are identical | [`ce07aff`](https://github.com/kylehgc/rtk/commit/ce07aff) |
 | fix(hook): make gemini runner fail open on empty stdin | [`cf976df`](https://github.com/kylehgc/rtk/commit/cf976df) |
 | fix(hook): fail open when stdin payload stalls | [`04f881a`](https://github.com/kylehgc/rtk/commit/04f881a) |
 | fix(hooks): apply exclude_commands to the resolved tool, not just raw text | [`6871925`](https://github.com/kylehgc/rtk/commit/6871925) |
