@@ -578,6 +578,34 @@ mod tests {
         assert_eq!(result.removed, 1);
     }
 
+    #[test]
+    fn test_compute_diff_over_cell_cap_emits_wholesale_replacement() {
+        // 2001 x 2001 = 4_004_001 cells > LCS_CELL_CAP, so the cap branch must
+        // fire: no LCS table, every middle line reported as removed + added,
+        // with line numbers from each line's own file. Sides share no prefix,
+        // suffix, or interior lines, so nothing is trimmed or matched away.
+        let a: Vec<String> = (0..2001).map(|i| format!("alpha {}", i)).collect();
+        let b: Vec<String> = (0..2001).map(|i| format!("brave {}", i)).collect();
+        let a_refs: Vec<&str> = a.iter().map(|s| s.as_str()).collect();
+        let b_refs: Vec<&str> = b.iter().map(|s| s.as_str()).collect();
+        assert!(
+            a_refs.len().saturating_mul(b_refs.len()) > LCS_CELL_CAP,
+            "fixture must exceed the cell cap"
+        );
+
+        let result = compute_diff(&a_refs, &b_refs);
+        assert_eq!(result.removed, 2001, "every old line reported removed");
+        assert_eq!(result.added, 2001, "every new line reported added");
+        assert!(result
+            .changes
+            .iter()
+            .any(|c| matches!(c, DiffChange::Removed(1, t) if t == "alpha 0")));
+        assert!(result
+            .changes
+            .iter()
+            .any(|c| matches!(c, DiffChange::Added(2001, t) if t == "brave 2000")));
+    }
+
     // --- render_file_diff (issue #2364 regression) ---
 
     #[test]
