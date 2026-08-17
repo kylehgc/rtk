@@ -35,12 +35,27 @@ pub fn run(file1: &Path, file2: &Path, verbose: u8) -> Result<i32> {
 /// Renders the condensed file comparison and returns it with the
 /// diff-convention exit code (0 = identical, 1 = differences found).
 fn render_file_diff(file1: &Path, file2: &Path, content1: &str, content2: &str) -> (String, i32) {
+    // Byte equality is the only safe basis for claiming identity, and it must be
+    // checked before `lines()` touches the input. `str::lines()` strips a
+    // trailing `\r` and treats the final newline as optional, so a CRLF-vs-LF or
+    // missing-trailing-newline difference collapses to identical line vectors.
+    // Reporting "identical" with exit 0 for files that differ silently passes
+    // any verification gate built on `diff`.
+    if content1 == content2 {
+        return ("[ok] Files are identical\n".to_string(), 0);
+    }
+
     let lines1: Vec<&str> = content1.lines().collect();
     let lines2: Vec<&str> = content2.lines().collect();
     let diff = compute_diff(&lines1, &lines2);
 
     if diff.changes.is_empty() {
-        return ("[ok] Files are identical\n".to_string(), 0);
+        // Bytes differ, lines don't: the difference is exactly what `lines()`
+        // normalizes away. Name it rather than rendering an empty change list.
+        return (
+            describe_invisible_difference(file1, file2, content1, content2),
+            1,
+        );
     }
 
     let mut rtk = String::new();
@@ -51,6 +66,59 @@ fn render_file_diff(file1: &Path, file2: &Path, content1: &str, content2: &str) 
     ));
     rtk.push_str(&format_diff_changes(&diff));
     (rtk, 1)
+}
+
+/// Describe a difference that a line-based diff cannot see.
+///
+/// Reached only when the bytes differ but `lines()` yields identical vectors,
+/// which narrows the cause to the two things `lines()` normalizes: a `\r`
+/// before the newline, and the presence of the final newline. Rendering the
+/// usual `~ 12 foo → foo` change list here would show two visually identical
+/// strings, so state the cause instead.
+fn describe_invisible_difference(
+    file1: &Path,
+    file2: &Path,
+    content1: &str,
+    content2: &str,
+) -> String {
+    let crlf1 = content1.matches("\r\n").count();
+    let crlf2 = content2.matches("\r\n").count();
+    let nl1 = content1.ends_with('\n');
+    let nl2 = content2.ends_with('\n');
+
+    let mut notes: Vec<String> = Vec::new();
+    if crlf1 != crlf2 {
+        notes.push(format!(
+            "line endings: {} CRLF vs {} CRLF",
+            crlf1, crlf2
+        ));
+    }
+    if nl1 != nl2 {
+        notes.push(format!(
+            "trailing newline: {} vs {}",
+            if nl1 { "present" } else { "absent" },
+            if nl2 { "present" } else { "absent" }
+        ));
+    }
+    if notes.is_empty() {
+        // Defensive: no known `lines()` normalization explains it. Say so
+        // rather than implying the files match.
+        notes.push(format!(
+            "{} vs {} bytes, invisible to a line-based diff",
+            content1.len(),
+            content2.len()
+        ));
+    }
+
+    // Deliberately avoids the word "identical". That string is the signal for
+    // the true-identity case, and a reader (or grep) scanning for it must not
+    // match a report about files that differ.
+    format!(
+        "{} → {}\n   differs, text matches ({})\n",
+        file1.display(),
+        file2.display(),
+        notes.join("; ")
+    )
 }
 
 /// Run diff from stdin (piped command output)
@@ -99,41 +167,169 @@ fn format_diff_changes(diff: &DiffResult) -> String {
     out
 }
 
+/// One edit-script step, carrying a 1-based line number in its own file.
+enum Op {
+    Del(usize, String),
+    Ins(usize, String),
+}
+
+/// Cap on LCS table cells (rows × cols). At 4M cells the `u32` table is 16MB,
+/// which is the most we will spend to align two files. Past it the trimmed
+/// middles share so little that any alignment is noise anyway, so we emit a
+/// wholesale replacement rather than allocate a multi-gigabyte table.
+const LCS_CELL_CAP: usize = 4_000_000;
+
+/// Diff two line sequences by longest-common-subsequence.
+///
+/// The previous implementation compared **positionally** (`lines1[i]` vs
+/// `lines2[i]` for i in 0..max_len), so a single inserted line desynchronized
+/// every line after it: each subsequent pair compared unrelated lines, the whole
+/// tail rendered as changed, and the output grew large enough that the
+/// `never_worse` guard discarded it and dumped both files concatenated instead
+/// of showing one insertion.
 fn compute_diff(lines1: &[&str], lines2: &[&str]) -> DiffResult {
+    // Common prefix and suffix carry no information and dominate real diffs.
+    // Trimming them first is what keeps the LCS table affordable.
+    let mut lo = 0usize;
+    while lo < lines1.len() && lo < lines2.len() && lines1[lo] == lines2[lo] {
+        lo += 1;
+    }
+    let mut hi1 = lines1.len();
+    let mut hi2 = lines2.len();
+    while hi1 > lo && hi2 > lo && lines1[hi1 - 1] == lines2[hi2 - 1] {
+        hi1 -= 1;
+        hi2 -= 1;
+    }
+
+    let a = &lines1[lo..hi1];
+    let b = &lines2[lo..hi2];
+
+    let ops = if a.len().saturating_mul(b.len()) > LCS_CELL_CAP {
+        let mut v = Vec::with_capacity(a.len() + b.len());
+        for (i, l) in a.iter().enumerate() {
+            v.push(Op::Del(lo + i + 1, (*l).to_string()));
+        }
+        for (j, l) in b.iter().enumerate() {
+            v.push(Op::Ins(lo + j + 1, (*l).to_string()));
+        }
+        v
+    } else {
+        lcs_ops(a, b, lo)
+    };
+
+    ops_to_changes(ops)
+}
+
+/// Backtrack an LCS table into an edit script. `offset` maps middle-relative
+/// indices back to real file line numbers after prefix trimming.
+fn lcs_ops(a: &[&str], b: &[&str], offset: usize) -> Vec<Op> {
+    let n = a.len();
+    let m = b.len();
+    if n == 0 || m == 0 {
+        let mut v = Vec::with_capacity(n + m);
+        for (i, l) in a.iter().enumerate() {
+            v.push(Op::Del(offset + i + 1, (*l).to_string()));
+        }
+        for (j, l) in b.iter().enumerate() {
+            v.push(Op::Ins(offset + j + 1, (*l).to_string()));
+        }
+        return v;
+    }
+
+    // dp[i][j] = LCS length of a[i..] and b[j..]
+    let stride = m + 1;
+    let mut dp = vec![0u32; (n + 1) * stride];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            dp[i * stride + j] = if a[i] == b[j] {
+                dp[(i + 1) * stride + (j + 1)] + 1
+            } else {
+                dp[(i + 1) * stride + j].max(dp[i * stride + (j + 1)])
+            };
+        }
+    }
+
+    let mut ops = Vec::new();
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < n && j < m {
+        if a[i] == b[j] {
+            i += 1;
+            j += 1;
+        } else if dp[(i + 1) * stride + j] >= dp[i * stride + (j + 1)] {
+            ops.push(Op::Del(offset + i + 1, a[i].to_string()));
+            i += 1;
+        } else {
+            ops.push(Op::Ins(offset + j + 1, b[j].to_string()));
+            j += 1;
+        }
+    }
+    while i < n {
+        ops.push(Op::Del(offset + i + 1, a[i].to_string()));
+        i += 1;
+    }
+    while j < m {
+        ops.push(Op::Ins(offset + j + 1, b[j].to_string()));
+        j += 1;
+    }
+    ops
+}
+
+/// Fold the edit script into the reported change list, pairing each run of
+/// deletions with the run of insertions that follows it so a rewritten line
+/// still reads as one `Modified` rather than a remove plus an unrelated add.
+fn ops_to_changes(ops: Vec<Op>) -> DiffResult {
     let mut changes = Vec::new();
-    let mut added = 0;
-    let mut removed = 0;
-    let mut modified = 0;
+    let (mut added, mut removed, mut modified) = (0usize, 0usize, 0usize);
 
-    // Simple line-by-line comparison (not optimal but fast)
-    let max_len = lines1.len().max(lines2.len());
+    let mut k = 0usize;
+    while k < ops.len() {
+        let del_start = k;
+        while matches!(ops.get(k), Some(Op::Del(..))) {
+            k += 1;
+        }
+        let dels = &ops[del_start..k];
 
-    for i in 0..max_len {
-        let l1 = lines1.get(i).copied();
-        let l2 = lines2.get(i).copied();
+        let ins_start = k;
+        while matches!(ops.get(k), Some(Op::Ins(..))) {
+            k += 1;
+        }
+        let inss = &ops[ins_start..k];
 
-        match (l1, l2) {
-            (Some(a), Some(b)) if a != b => {
-                // Check if it's similar (modification) or completely different
-                if similarity(a, b) > 0.5 {
-                    changes.push(DiffChange::Modified(i + 1, a.to_string(), b.to_string()));
-                    modified += 1;
-                } else {
-                    changes.push(DiffChange::Removed(i + 1, a.to_string()));
-                    changes.push(DiffChange::Added(i + 1, b.to_string()));
-                    removed += 1;
-                    added += 1;
-                }
-            }
-            (Some(a), None) => {
-                changes.push(DiffChange::Removed(i + 1, a.to_string()));
+        let pairs = dels.len().min(inss.len());
+        for p in 0..pairs {
+            let (dline, dtext) = match &dels[p] {
+                Op::Del(l, t) => (*l, t.as_str()),
+                Op::Ins(..) => unreachable!("del run holds only deletions"),
+            };
+            let itext = match &inss[p] {
+                Op::Ins(_, t) => t.as_str(),
+                Op::Del(..) => unreachable!("ins run holds only insertions"),
+            };
+            if similarity(dtext, itext) > 0.5 {
+                changes.push(DiffChange::Modified(
+                    dline,
+                    dtext.to_string(),
+                    itext.to_string(),
+                ));
+                modified += 1;
+            } else {
+                changes.push(DiffChange::Removed(dline, dtext.to_string()));
+                changes.push(DiffChange::Added(dline, itext.to_string()));
                 removed += 1;
-            }
-            (None, Some(b)) => {
-                changes.push(DiffChange::Added(i + 1, b.to_string()));
                 added += 1;
             }
-            _ => {}
+        }
+        for d in dels.iter().skip(pairs) {
+            if let Op::Del(l, t) = d {
+                changes.push(DiffChange::Removed(*l, t.clone()));
+                removed += 1;
+            }
+        }
+        for ins in inss.iter().skip(pairs) {
+            if let Op::Ins(l, t) = ins {
+                changes.push(DiffChange::Added(*l, t.clone()));
+                added += 1;
+            }
         }
     }
 
@@ -309,6 +505,107 @@ mod tests {
         assert!(result.changes.is_empty());
     }
 
+    // --- compute_diff: LCS alignment, not positional ---
+
+    #[test]
+    fn test_compute_diff_single_insertion_does_not_desync_the_tail() {
+        // The bug: positional compare paired a[i] against b[i], so inserting one
+        // line at the top made every later pair compare unrelated lines and the
+        // whole file rendered as changed.
+        let a = vec!["one", "two", "three", "four", "five"];
+        let b = vec!["INSERTED", "one", "two", "three", "four", "five"];
+        let result = compute_diff(&a, &b);
+        assert_eq!(result.added, 1, "exactly one line was added");
+        assert_eq!(result.removed, 0, "nothing was removed");
+        assert_eq!(result.modified, 0, "nothing was modified");
+        assert_eq!(result.changes.len(), 1);
+        match &result.changes[0] {
+            DiffChange::Added(line, text) => {
+                assert_eq!(text, "INSERTED");
+                assert_eq!(*line, 1);
+            }
+            other => panic!("expected a single Added, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_compute_diff_insertion_in_the_middle() {
+        let a = vec!["a", "b", "c", "d"];
+        let b = vec!["a", "b", "NEW", "c", "d"];
+        let result = compute_diff(&a, &b);
+        assert_eq!((result.added, result.removed, result.modified), (1, 0, 0));
+    }
+
+    #[test]
+    fn test_compute_diff_deletion_in_the_middle() {
+        let a = vec!["a", "b", "GONE", "c", "d"];
+        let b = vec!["a", "b", "c", "d"];
+        let result = compute_diff(&a, &b);
+        assert_eq!((result.added, result.removed, result.modified), (0, 1, 0));
+        match &result.changes[0] {
+            DiffChange::Removed(line, text) => {
+                assert_eq!(text, "GONE");
+                assert_eq!(*line, 3, "line number is the old file's");
+            }
+            other => panic!("expected Removed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_compute_diff_reports_line_numbers_after_a_shift() {
+        // A change *after* an insertion must still name its own line, not an
+        // offset one.
+        let a = vec!["a", "b", "let x = 1;"];
+        let b = vec!["NEW", "a", "b", "let x = 2;"];
+        let result = compute_diff(&a, &b);
+        assert_eq!(result.added, 1);
+        assert_eq!(result.modified, 1);
+        assert!(result
+            .changes
+            .iter()
+            .any(|c| matches!(c, DiffChange::Modified(3, old, new)
+                if old == "let x = 1;" && new == "let x = 2;")));
+    }
+
+    #[test]
+    fn test_compute_diff_wholesale_replacement_still_pairs_by_similarity() {
+        let a = vec!["let x = 1;", "aaaa"];
+        let b = vec!["let x = 2;", "zzzz"];
+        let result = compute_diff(&a, &b);
+        // First pair is similar -> Modified; second is not -> Removed + Added.
+        assert_eq!(result.modified, 1);
+        assert_eq!(result.added, 1);
+        assert_eq!(result.removed, 1);
+    }
+
+    #[test]
+    fn test_compute_diff_over_cell_cap_emits_wholesale_replacement() {
+        // 2001 x 2001 = 4_004_001 cells > LCS_CELL_CAP, so the cap branch must
+        // fire: no LCS table, every middle line reported as removed + added,
+        // with line numbers from each line's own file. Sides share no prefix,
+        // suffix, or interior lines, so nothing is trimmed or matched away.
+        let a: Vec<String> = (0..2001).map(|i| format!("alpha {}", i)).collect();
+        let b: Vec<String> = (0..2001).map(|i| format!("brave {}", i)).collect();
+        let a_refs: Vec<&str> = a.iter().map(|s| s.as_str()).collect();
+        let b_refs: Vec<&str> = b.iter().map(|s| s.as_str()).collect();
+        assert!(
+            a_refs.len().saturating_mul(b_refs.len()) > LCS_CELL_CAP,
+            "fixture must exceed the cell cap"
+        );
+
+        let result = compute_diff(&a_refs, &b_refs);
+        assert_eq!(result.removed, 2001, "every old line reported removed");
+        assert_eq!(result.added, 2001, "every new line reported added");
+        assert!(result
+            .changes
+            .iter()
+            .any(|c| matches!(c, DiffChange::Removed(1, t) if t == "alpha 0")));
+        assert!(result
+            .changes
+            .iter()
+            .any(|c| matches!(c, DiffChange::Added(2001, t) if t == "brave 2000")));
+    }
+
     // --- render_file_diff (issue #2364 regression) ---
 
     #[test]
@@ -330,6 +627,79 @@ mod tests {
         assert!(out.contains("a: 1"));
         assert!(out.contains("a: 2"));
         assert_eq!(code, 1, "differing files must exit 1 (diff convention)");
+    }
+
+    #[test]
+    fn test_render_crlf_difference_is_not_identical() {
+        // `str::lines()` strips a trailing `\r`, so a CRLF-vs-LF file pair used
+        // to collapse to identical line vectors and report "[ok] Files are
+        // identical" with exit 0. `cmp` says these differ at byte 6.
+        let (out, code) = render_file_diff(
+            Path::new("a.txt"),
+            Path::new("b.txt"),
+            "keep1\nkeep2\nkeep3\n",
+            "keep1\r\nkeep2\r\nkeep3\n",
+        );
+        assert!(
+            !out.contains("identical"),
+            "CRLF-vs-LF reported as identical:\n{}",
+            out
+        );
+        assert_eq!(code, 1, "differing files must exit 1");
+        assert!(out.contains("0 CRLF vs 2 CRLF"), "got: {}", out);
+    }
+
+    #[test]
+    fn test_render_trailing_newline_difference_is_not_identical() {
+        // The other thing `lines()` normalizes: the final newline is optional.
+        let (out, code) = render_file_diff(
+            Path::new("a.txt"),
+            Path::new("b.txt"),
+            "keep1\nkeep2\n",
+            "keep1\nkeep2",
+        );
+        assert!(
+            !out.contains("identical"),
+            "trailing-newline diff reported as identical:\n{}",
+            out
+        );
+        assert_eq!(code, 1);
+        assert!(out.contains("trailing newline: present vs absent"), "got: {}", out);
+    }
+
+    #[test]
+    fn test_render_byte_identical_is_identical() {
+        // The guard must not flip the true-identity case to a false positive.
+        let (out, code) = render_file_diff(
+            Path::new("a.txt"),
+            Path::new("b.txt"),
+            "keep1\nkeep2\n",
+            "keep1\nkeep2\n",
+        );
+        assert!(out.contains("[ok] Files are identical"));
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn test_render_partial_crlf_matches_reported_repro() {
+        // The shape actually observed: a 200-line file where a Windows editor
+        // touched 24 lines. Text identical, bytes differ, `cmp` exits 1.
+        let plain: String = (0..200).map(|i| format!("line {} content here\n", i)).collect();
+        let mixed: String = (0..200)
+            .map(|i| {
+                if (50..74).contains(&i) {
+                    format!("line {} content here\r\n", i)
+                } else {
+                    format!("line {} content here\n", i)
+                }
+            })
+            .collect();
+        assert_ne!(plain, mixed, "fixture must actually differ");
+
+        let (out, code) = render_file_diff(Path::new("a.txt"), Path::new("b.txt"), &plain, &mixed);
+        assert!(!out.contains("identical"), "got: {}", out);
+        assert_eq!(code, 1, "must exit 1 so a `diff` gate fails");
+        assert!(out.contains("0 CRLF vs 24 CRLF"), "got: {}", out);
     }
 
     #[test]
