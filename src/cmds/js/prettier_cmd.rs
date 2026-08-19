@@ -2,7 +2,7 @@
 
 use crate::core::runner::{self, RunOptions};
 use crate::core::truncate::CAP_WARNINGS;
-use crate::core::utils::package_manager_exec;
+use crate::core::utils::{package_manager_exec, strip_ansi};
 use anyhow::Result;
 
 pub fn run(args: &[String], verbose: u8) -> Result<i32> {
@@ -34,6 +34,9 @@ pub fn filter_prettier_output(output: &str) -> String {
 }
 
 fn filter_prettier_output_with_exit(output: &str, exit_code: i32) -> String {
+    // Prettier colors the "[warn]" marker even when piped, so the prefix
+    // match below must see the literal marker, not "[\x1b[33mwarn\x1b[39m]".
+    let output = &strip_ansi(output);
     // #221: empty or whitespace-only output means prettier didn't run
     if output.trim().is_empty() {
         return "Error: prettier produced no output".to_string();
@@ -242,5 +245,18 @@ Code style issues found in the above file(s). Forgot to run Prettier?
         let output = "Checking formatting...\nAll matched files use Prettier code style!";
         let result = filter_prettier_output_with_exit(output, 0);
         assert!(result.contains("All files formatted correctly"));
+    }
+
+    #[test]
+    fn test_filter_check_failure_ansi_colored_warn() {
+        // Real prettier 3.x output captured through rtk's pipes on Windows:
+        // the [warn] marker keeps its ANSI color codes even when not a TTY.
+        let output = "Checking formatting...\n\
+                      [\u{1b}[33mwarn\u{1b}[39m] bad.js\n\
+                      [\u{1b}[33mwarn\u{1b}[39m] Code style issues found in the above file. Run Prettier with --write to fix.";
+        let result = filter_prettier_output_with_exit(output, 1);
+        assert!(result.contains("1 files need formatting"), "got: {}", result);
+        assert!(result.contains("bad.js"));
+        assert!(!result.contains("All files formatted correctly"));
     }
 }
