@@ -334,9 +334,31 @@ The body carries the evidence. Include:
 
 ## Phase 6 — Review, then merge
 
-Run a review before merging. `/code-review` gives Standards + Spec axes in parallel; the repo's
-`security-guardian` is worth adding for anything touching hooks, shell escaping, or untrusted
-input parsing.
+Run a review before merging. Two passes, different jobs:
+
+1. `/code-review` — Standards + Spec axes in parallel; add `security-guardian` for anything
+   touching hooks, shell escaping, or untrusted input parsing.
+2. **Upstream's own reviewer** — run the prompt in `.claude/agents/code-reviewer.md` over the
+   branch diff. Upstream runs this exact prompt on incoming PRs (the `arkgum` reviews on
+   rtk-ai/rtk#3199 map line-for-line onto it), so passing it locally is passing upstream's
+   review before it happens. It is **not** a registered `subagent_type` (see Traps) — read the
+   file and run its body as the prompt of a `general-purpose` agent.
+
+Rules for the code-reviewer pass, learned the hard way on #3199:
+
+- **Uncontaminated run**: give the agent only the reviewer prompt, the diff, and repo access.
+  No prior-round history, no "deferred per author's note" framing — a primed reviewer ratifies
+  the deferral it was handed; upstream reading cold will not.
+- **Treat any concretely traceable diagnostic loss as 🔴**, regardless of claimed rarity.
+- **Don't document limitations that are cheap to fix — fix them.** The reviewer reads doc
+  comments and promotes "known limit" notes to next-round blockers.
+- Its Call-Site Analysis rule enumerates input shapes, so incremental fixes that add routing
+  state never converge. Converge by collapsing behavior to one literal invariant plus
+  exhaustive sweep tests.
+
+Mandatory for Original fixes (they face this prompt again at Phase 7) and for fork-authored
+Amendments; for a byte-identical cherry-pick it's cheap insurance — still run it, upstream's
+reviewer hasn't necessarily seen that PR either.
 
 Fix what review finds, re-run the gate, and record the round as a PR comment so the reasoning
 survives the merge.
@@ -407,6 +429,9 @@ gh pr create --repo rtk-ai/rtk --base develop --title "..." --body-file <file>
 - Never open an Upstream PR from `develop` — the fork's mainline carries dozens of unrelated
   commits.
 - Target upstream's `develop`, never `master`.
+- Upstream reviews with the same `.claude/agents/code-reviewer.md` prompt (as the `arkgum`
+  account). The Phase 6 uncontaminated pass **is** the pre-clear for this — if it hasn't run
+  clean on this branch, run it before opening the PR.
 - Upstream requires a CLA signature on first contribution.
 - **Only then close the fork ticket.**
 
