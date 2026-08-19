@@ -33,7 +33,7 @@ pub fn filter_prettier_output(output: &str) -> String {
     filter_prettier_output_with_exit(output, 0)
 }
 
-fn filter_prettier_output_with_exit(output: &str, exit_code: i32) -> String {
+pub(crate) fn filter_prettier_output_with_exit(output: &str, exit_code: i32) -> String {
     // Prettier colors the "[warn]" marker even when piped, so the prefix
     // match below must see the literal marker, not "[\x1b[33mwarn\x1b[39m]".
     let output = &strip_ansi(output);
@@ -41,6 +41,12 @@ fn filter_prettier_output_with_exit(output: &str, exit_code: i32) -> String {
     if output.trim().is_empty() {
         return "Error: prettier produced no output".to_string();
     }
+
+    // One invariant: a run that signals failure never yields the success
+    // line. Non-zero exit covers callers that have an exit code; prettier's
+    // own "Code style issues found" verdict covers callers that don't
+    // (pipe mode, where the filter sees only text).
+    let failed = exit_code != 0 || output.contains("Code style issues found");
 
     let mut files_to_format: Vec<String> = Vec::new();
     let mut files_checked = 0;
@@ -90,7 +96,7 @@ fn filter_prettier_output_with_exit(output: &str, exit_code: i32) -> String {
     }
 
     // Check if all files are formatted
-    if files_to_format.is_empty() && output.contains("All matched files use Prettier") {
+    if !failed && files_to_format.is_empty() && output.contains("All matched files use Prettier") {
         return "Prettier: All files formatted correctly".to_string();
     }
 
@@ -104,7 +110,7 @@ fn filter_prettier_output_with_exit(output: &str, exit_code: i32) -> String {
     if is_check_mode {
         // Check mode: show files that need formatting
         if files_to_format.is_empty() {
-            if exit_code != 0 {
+            if failed {
                 // Prettier failed but no file list could be parsed (unknown
                 // extension, unexpected output shape). Never claim success on
                 // a failing check — pass the real output through.
@@ -245,6 +251,56 @@ Code style issues found in the above file(s). Forgot to run Prettier?
         let output = "Checking formatting...\nAll matched files use Prettier code style!";
         let result = filter_prettier_output_with_exit(output, 0);
         assert!(result.contains("All files formatted correctly"));
+    }
+
+    #[test]
+    fn test_filter_check_failure_textual_verdict_no_exit_code() {
+        // Pipe/format callers may have no exit code to give, but prettier's
+        // own "Code style issues found" verdict still marks the run failing.
+        let output = "Checking formatting...\n\
+                      [warn] src/component.vue\n\
+                      [warn] Code style issues found in the above file. Run Prettier with --write to fix.";
+        let result = filter_prettier_output(output);
+        assert!(
+            !result.contains("All files formatted correctly"),
+            "failing check reported as success: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_filter_check_failure_stray_success_summary() {
+        // Non-zero exit wins over a success summary line in the output.
+        let output = "Checking formatting...\nAll matched files use Prettier code style!";
+        let result = filter_prettier_output_with_exit(output, 1);
+        assert!(
+            !result.contains("All files formatted correctly"),
+            "failing check reported as success: {}",
+            result
+        );
+    }
+
+    fn count_tokens(s: &str) -> usize {
+        s.split_whitespace().count()
+    }
+
+    #[test]
+    fn test_filter_check_savings_over_60_percent() {
+        let mut output = String::from("Checking formatting...\n");
+        for i in 0..100 {
+            output.push_str(&format!("[warn] src/components/file{}.ts\n", i));
+        }
+        output.push_str(
+            "[warn] Code style issues found in the above files. Run Prettier with --write to fix.",
+        );
+        let filtered = filter_prettier_output_with_exit(&output, 1);
+        let (input, kept) = (count_tokens(&output), count_tokens(&filtered));
+        assert!(
+            kept * 100 <= input * 40,
+            "savings below 60%: {} -> {} tokens",
+            input,
+            kept
+        );
     }
 
     #[test]
