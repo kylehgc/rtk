@@ -48,7 +48,7 @@ output *larger* and more correct. This fork does not claim to save more tokens t
 upstream — that is upstream's pitch. It claims to not lose your errors.
 
 <!-- FORK_DELTA_START -->
-**37 fixes in this fork that upstream does not have.** Each links to the commit,
+**40 fixes in this fork that upstream does not have.** Each links to the commit,
 where the original author is recorded. Adopted fixes come from community PRs that upstream
 has not merged — see the [adoption issues](https://github.com/kylehgc/rtk/issues?q=is%3Aissue+Adopt+upstream)
 for provenance.
@@ -60,6 +60,9 @@ upstream in another form.
 
 | Fix | Commit |
 |---|---|
+| fix(prettier): enforce the failure invariant at every call site | [`59f2564`](https://github.com/kylehgc/rtk/commit/59f2564) |
+| fix(prettier): strip ANSI before parsing [warn] markers | [`6f4d9f7`](https://github.com/kylehgc/rtk/commit/6f4d9f7) |
+| fix(prettier): read check results from stderr, never report a failing check as success | [`34946b7`](https://github.com/kylehgc/rtk/commit/34946b7) |
 | fix(rewrite): never rewrite yadm to rtk git; keep bare git add a no-op | [`1d67272`](https://github.com/kylehgc/rtk/commit/1d67272) |
 | fix(diff): align by LCS instead of comparing line N to line N | [`54cb3a1`](https://github.com/kylehgc/rtk/commit/54cb3a1) |
 | fix(diff): compare bytes before claiming two files are identical | [`ce07aff`](https://github.com/kylehgc/rtk/commit/ce07aff) |
