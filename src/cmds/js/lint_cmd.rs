@@ -88,7 +88,14 @@ fn detect_linter(args: &[String]) -> (&str, bool) {
         || args[0].contains('/')
         || args[0].contains('.');
 
-    if is_path_or_flag || std::path::Path::new(&args[0]).exists() {
+    // A name the dispatch table special-cases keeps its linter meaning even
+    // when a file or directory of the same name exists in cwd — otherwise a
+    // vendored `biome` directory would silently reroute `rtk lint biome
+    // check` through ESLint.
+    let known_linter =
+        !args.is_empty() && (is_python_linter(&args[0]) || matches!(args[0].as_str(), "eslint" | "biome"));
+
+    if is_path_or_flag || (!known_linter && std::path::Path::new(&args[0]).exists()) {
         ("eslint", false)
     } else {
         (&args[0], true)
@@ -477,7 +484,9 @@ fn filter_generic_lint(output: &str, succeeded: bool) -> String {
 
     if errors == 0 && warnings == 0 {
         if !succeeded {
-            return output.trim().to_string();
+            // Bound the shown copy like the sibling fallbacks; tee keeps the
+            // full raw on disk.
+            return truncate(output.trim(), config::limits().passthrough_max_chars);
         }
         return "Lint: No issues found".to_string();
     }
@@ -736,6 +745,28 @@ mod tests {
         let (linter, explicit) = detect_linter(&args);
         assert_eq!(linter, "biome");
         assert!(explicit);
+    }
+
+    /// Amendment: a vendored file or directory named after a known linter
+    /// must not reroute an explicit invocation through ESLint.
+    #[test]
+    fn detect_linter_keeps_known_linter_name_even_when_it_exists_on_disk() {
+        let dir = std::path::Path::new("biome");
+        let created = !dir.exists();
+        if created {
+            std::fs::create_dir(dir).expect("create biome dir");
+        }
+
+        let args: Vec<String> = vec!["biome".into(), "check".into()];
+        let (linter, explicit) = detect_linter(&args);
+        let result = (linter.to_string(), explicit);
+
+        if created {
+            std::fs::remove_dir(dir).expect("remove biome dir");
+        }
+
+        assert_eq!(result.0, "biome");
+        assert!(result.1);
     }
 
     /// Regression: pnpm reports a missing command without the word "error",
