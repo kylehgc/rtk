@@ -360,7 +360,7 @@ fn condense_unified_diff(diff: &str) -> String {
     let mut current_file = String::new();
     let mut added = 0;
     let mut removed = 0;
-    let mut changes = Vec::new();
+    let mut changes: Vec<String> = Vec::new();
 
     // Never truncate diff content — users make decisions based on this data.
     // Only strip diff metadata (headers, @@ hunks); all +/- lines shown in full.
@@ -370,7 +370,8 @@ fn condense_unified_diff(diff: &str) -> String {
                 if !current_file.is_empty() && (added > 0 || removed > 0) {
                     result.push(format!("[file] {} (+{} -{})", current_file, added, removed));
                     for c in &changes {
-                        result.push(format!("  {}", c));
+                        // Column 0: anchored greps (`^[+-]`) must match these.
+                        result.push(c.clone());
                     }
                     let total = added + removed;
                     if total > 10 {
@@ -398,7 +399,8 @@ fn condense_unified_diff(diff: &str) -> String {
     if !current_file.is_empty() && (added > 0 || removed > 0) {
         result.push(format!("[file] {} (+{} -{})", current_file, added, removed));
         for c in &changes {
-            result.push(format!("  {}", c));
+            // Column 0: anchored greps (`^[+-]`) must match these.
+            result.push(c.clone());
         }
         let total = added + removed;
         if total > 10 {
@@ -770,6 +772,21 @@ diff --git a/b.rs b/b.rs
         let result = condense_unified_diff(diff);
         assert!(result.contains("a.rs"));
         assert!(result.contains("b.rs"));
+    }
+
+    #[test]
+    fn test_condense_unified_diff_markers_at_column_0() {
+        // Same silent-false-negative class as compact_diff (#118 / upstream
+        // #3646): indented markers make anchored greps (`^[+-]`) match nothing.
+        let diff = "diff --git a/f.rs b/f.rs\n--- a/f.rs\n+++ b/f.rs\n@@ -1,2 +1,2 @@\n-old line\n+new line\n";
+        let result = condense_unified_diff(diff);
+        assert!(result.lines().any(|l| l == "-old line"), "got:\n{}", result);
+        assert!(result.lines().any(|l| l == "+new line"), "got:\n{}", result);
+        assert!(
+            !result.lines().any(|l| l.starts_with(' ')),
+            "change lines must not be indented:\n{}",
+            result
+        );
     }
 
     #[test]
