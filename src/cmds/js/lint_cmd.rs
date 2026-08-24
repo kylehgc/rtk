@@ -74,13 +74,28 @@ fn strip_pm_prefix(args: &[String]) -> usize {
 
 /// Detect the linter name from args (after stripping PM prefixes).
 /// Returns the linter name and whether it was explicitly specified.
+///
+/// The rewrite rule maps `npx eslint src` to `rtk lint src`, dropping the
+/// linter name, so the first argument here is just as likely to be a path as
+/// a linter. A bare directory name (`src`, `app`, `lib`) carries no `.`, `/`
+/// or leading `-`, and used to be taken for a linter: rtk then ran
+/// `npx -- src`, which cannot exist, and the resulting package-manager error
+/// was summarized as a lint verdict. Checking the filesystem resolves the
+/// ambiguity in the only direction that cannot invent a linter run.
 fn detect_linter(args: &[String]) -> (&str, bool) {
     let is_path_or_flag = args.is_empty()
         || args[0].starts_with('-')
         || args[0].contains('/')
         || args[0].contains('.');
 
-    if is_path_or_flag {
+    // A name the dispatch table special-cases keeps its linter meaning even
+    // when a file or directory of the same name exists in cwd — otherwise a
+    // vendored `biome` directory would silently reroute `rtk lint biome
+    // check` through ESLint.
+    let known_linter =
+        !args.is_empty() && (is_python_linter(&args[0]) || matches!(args[0].as_str(), "eslint" | "biome"));
+
+    if is_path_or_flag || (!known_linter && std::path::Path::new(&args[0]).exists()) {
         ("eslint", false)
     } else {
         (&args[0], true)
@@ -196,7 +211,7 @@ pub fn run(args: &[String], verbose: u8) -> Result<i32> {
         }
         "pylint" => filter_pylint_json(&result.stdout),
         "mypy" => mypy_cmd::filter_mypy_output(&raw),
-        _ => filter_generic_lint(&raw),
+        _ => filter_generic_lint(&raw, result.success()),
     };
 
     let hint = crate::core::tee::tee_and_hint(&raw, "lint", result.exit_code);
@@ -442,8 +457,15 @@ fn filter_pylint_json(output: &str) -> String {
     result.trim().to_string()
 }
 
-/// Filter generic linter output (fallback for non-ESLint linters)
-fn filter_generic_lint(output: &str) -> String {
+/// Filter generic linter output (fallback for non-ESLint linters).
+///
+/// `succeeded` guards the clean verdict: this filter recognizes an issue by
+/// the words "error" and "warning", so a linter that never ran — missing
+/// binary, bad arguments, or a failure reported in the user's own language —
+/// yields zero of both and used to be summarized as "Lint: No issues found".
+/// A clean bill of health for a command that failed is the one output this
+/// filter must never produce, so a non-zero exit hands back the raw text.
+fn filter_generic_lint(output: &str, succeeded: bool) -> String {
     let mut warnings = 0;
     let mut errors = 0;
     let mut issues: Vec<String> = Vec::new();
@@ -461,6 +483,11 @@ fn filter_generic_lint(output: &str) -> String {
     }
 
     if errors == 0 && warnings == 0 {
+        if !succeeded {
+            // Bound the shown copy like the sibling fallbacks; tee keeps the
+            // full raw on disk.
+            return truncate(output.trim(), config::limits().passthrough_max_chars);
+        }
         return "Lint: No issues found".to_string();
     }
 
@@ -693,6 +720,90 @@ mod tests {
         let effective = &full_args[skip..];
         let (linter, _) = detect_linter(effective);
         assert_eq!(linter, "biome");
+    }
+
+    /// Regression: `npx eslint src` is rewritten to `rtk lint src`, so the
+    /// first argument is a path. Taking it for a linter ran `npx -- src`.
+    #[test]
+    fn detect_linter_treats_an_existing_directory_as_a_path() {
+        // Cargo runs unit tests from the crate root, where `src` exists.
+        // Reading the real cwd keeps this test free of any global mutation,
+        // which set_current_dir would impose on every test running alongside.
+        assert!(std::path::Path::new("src").is_dir(), "test precondition");
+
+        let args: Vec<String> = vec!["src".into()];
+        let (linter, explicit) = detect_linter(&args);
+
+        assert_eq!(linter, "eslint", "a directory that exists is a path");
+        assert!(!explicit);
+    }
+
+    #[test]
+    fn detect_linter_still_accepts_a_linter_name() {
+        // "biome" is not a directory here, so it keeps its linter meaning.
+        let args: Vec<String> = vec!["biome".into(), "check".into()];
+        let (linter, explicit) = detect_linter(&args);
+        assert_eq!(linter, "biome");
+        assert!(explicit);
+    }
+
+    /// Amendment: a vendored file or directory named after a known linter
+    /// must not reroute an explicit invocation through ESLint.
+    #[test]
+    fn detect_linter_keeps_known_linter_name_even_when_it_exists_on_disk() {
+        let dir = std::path::Path::new("biome");
+        let created = !dir.exists();
+        if created {
+            std::fs::create_dir(dir).expect("create biome dir");
+        }
+
+        let args: Vec<String> = vec!["biome".into(), "check".into()];
+        let (linter, explicit) = detect_linter(&args);
+        let result = (linter.to_string(), explicit);
+
+        if created {
+            std::fs::remove_dir(dir).expect("remove biome dir");
+        }
+
+        assert_eq!(result.0, "biome");
+        assert!(result.1);
+    }
+
+    /// Regression: pnpm reports a missing command without the word "error",
+    /// and in the user's locale. Both counters stayed at zero and the run was
+    /// summarized as clean although the linter never started.
+    #[test]
+    fn generic_lint_never_reports_clean_on_a_failed_run() {
+        let pnpm_failure = "'src' n'est pas reconnu en tant que commande interne\n\
+             ou externe, un programme executable ou un fichier de commandes.\n\
+             undefined\n\
+             ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command \"src\" not found";
+
+        let result = filter_generic_lint(pnpm_failure, false);
+        assert!(
+            !result.contains("No issues found"),
+            "a failed run must never read as clean: {result}"
+        );
+        assert!(
+            result.contains("ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL"),
+            "the raw failure must survive: {result}"
+        );
+    }
+
+    #[test]
+    fn generic_lint_reports_clean_on_a_successful_run() {
+        assert_eq!(
+            filter_generic_lint("Checked 12 files\n", true),
+            "Lint: No issues found"
+        );
+    }
+
+    #[test]
+    fn generic_lint_still_summarizes_real_findings() {
+        let output = "src/a.js:1:1 warning Unexpected console statement\n\
+             src/b.js:4:2 error Missing semicolon";
+        let result = filter_generic_lint(output, false);
+        assert!(result.starts_with("Lint: 1 errors, 1 warnings"), "{result}");
     }
 
     #[test]
