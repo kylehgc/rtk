@@ -656,10 +656,15 @@ func TestMultiply(t *testing.T) {
 }
 GOEOF
 
-  bench "golangci-lint" "golangci-lint run 2>&1 || true" "$RTK golangci-lint run"
-  bench "go test" "go test -v 2>&1 || true" "$RTK go test -v"
-  bench "go build" "go build ./... 2>&1 || true" "$RTK go build ./..."
-  bench "go vet" "go vet ./... 2>&1 || true" "$RTK go vet ./..."
+  # The rtk side needs 2>&1 to mirror the raw side: when the tool fails, rtk
+  # correctly re-emits its stderr on stderr with an empty stdout, and bench()
+  # discards stderr — so without the merge a failing tool reads as "filter
+  # returned empty output" (false ❌). Seen when the runner's `stable` Go moved
+  # to 1.27.0 and golangci-lint v1 started erroring on it.
+  bench "golangci-lint" "golangci-lint run 2>&1 || true" "$RTK golangci-lint run 2>&1"
+  bench "go test" "go test -v 2>&1 || true" "$RTK go test -v 2>&1"
+  bench "go build" "go build ./... 2>&1 || true" "$RTK go build ./... 2>&1"
+  bench "go vet" "go vet ./... 2>&1 || true" "$RTK go vet ./... 2>&1"
 
   cd "$RTK_ROOT"
   rm -rf "$GO_FIXTURE"
