@@ -332,15 +332,23 @@ rtk git diff [args...]    # Supporte --stat, --cached, --staged, etc.
 **Avant / Apres :**
 ```
 # git diff (~100 lignes)                    # rtk git diff (~25 lignes)
-diff --git a/src/main.rs b/src/main.rs      src/main.rs (+5/-2)
-index abc123..def456 100644                    +  let config = Config::load()?;
---- a/src/main.rs                              +  config.validate()?;
-+++ b/src/main.rs                              -  // old code
-@@ -10,6 +10,8 @@                              -  let x = 42;
-   fn main() {                               src/git.rs (+1/-1)
-+    let config = Config::load()?;              ~  format!("ok {}", branch)
-...30 lignes de headers et contexte...
+diff --git a/src/main.rs b/src/main.rs      src/main.rs | 2 ++
+index abc123..def456 100644                  1 file changed, 2 insertions(+)
+--- a/src/main.rs
++++ b/src/main.rs                            Changes:
+@@ -10,6 +10,8 @@
+   fn main() {                               src/main.rs
++    let config = Config::load()?;           @@ -10,6 +10,8 @@
+...30 lignes de headers et contexte...      +    let config = Config::load()?;
+                                            +    config.validate()?;
+                                             }
+                                              (+2 -0)
 ```
+
+Les marqueurs `+`/`-`/`@@` restent en colonne 0 (comme git les emet) : les
+greps ancres (`grep -E '^[+-]'`) fonctionnent sur la sortie filtree. Le bilan
+par fichier `(+N -M)` reste indente pour ne jamais etre pris pour une ligne
+du diff.
 
 ---
 
