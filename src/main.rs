@@ -313,13 +313,12 @@ enum Commands {
 
     /// Compact grep - strips whitespace, truncates, groups by file
     Grep {
-        // NOTE: these rtk-tuning options are intentionally long-only. Their
-        // natural short forms (`-l`, `-m`, `-t`) collide with native grep/rg
-        // flags of the same letter (files-with-matches, max-count, type) which
-        // users routinely pass. A short option here shadows the native flag and
-        // either crashes clap (`-l <pattern>` is not a `usize`) or silently
-        // applies the wrong semantics, defeating the `extra_args` passthrough.
-        // Keep these long-only so native flags reach search.rs. (Completes the
+        // NOTE: `-l` and `-t` are long-only here for the same reason upstream
+        // made `--max` long-only below: they collide with native grep/rg flags
+        // of the same letter (files-with-matches, type) that users routinely
+        // pass. A short option shadows the native flag and either crashes clap
+        // (`-l <pattern>` is not a `usize`) or silently applies the wrong
+        // semantics, defeating the `extra_args` passthrough. (Completes the
         // `-v`/`-n`/pattern/path cleanup from 84616d1.)
         /// Max line length
         #[arg(long, default_value = "80")]
