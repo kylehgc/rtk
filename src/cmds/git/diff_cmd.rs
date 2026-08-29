@@ -367,16 +367,27 @@ fn condense_unified_diff(diff: &str) -> String {
     //
     // `---`/`+++` are ambiguous by prefix alone: `--- a/f` is a header, but a
     // removed line whose content is `-- note` is also `--- note` on the wire.
-    // Position disambiguates them for free — a header only ever appears outside
-    // a hunk. Classifying by prefix alone dropped the content lines outright and
-    // let `+++ text` rename the file to a fragment of the user's own diff.
+    // Position disambiguates them — a header only ever appears outside a hunk.
+    // Classifying by prefix alone dropped the content lines outright and let
+    // `+++ text` rename the file to a fragment of the user's own diff.
+    //
+    // `@@` opens a hunk. What closes one is the format invariant, not a list of
+    // separators: every line inside a hunk carries a ` `, `+`, `-` or `\`
+    // marker, so any other line has left it. Keying the close on `diff --git`
+    // instead would strand every producer that spells the separator otherwise —
+    // `diff --cc` (git's own merge output), `diff -ru`, `Index:` — collapsing
+    // their files into the first one. Empty stays neutral: a context line whose
+    // trailing space was stripped in transit must not end the hunk early.
     let mut in_hunk = false;
     for line in diff.lines() {
         if line.starts_with("@@") {
             in_hunk = true;
-        } else if line.starts_with("diff --git") {
+            continue;
+        }
+        if !line.is_empty() && !line.starts_with([' ', '+', '-', '\\']) {
             in_hunk = false;
-        } else if !in_hunk && line.starts_with("+++ ") {
+        }
+        if !in_hunk && line.starts_with("+++ ") {
             if !current_file.is_empty() && (added > 0 || removed > 0) {
                 result.push(format!("[file] {} (+{} -{})", current_file, added, removed));
                 // Column 0: anchored greps (`^[+-]`) must match these.
@@ -880,6 +891,51 @@ diff --git a/b.rs b/b.rs
             result
         );
         assert!(result.contains("(+1 -1)"), "got:\n{}", result);
+    }
+
+    #[test]
+    fn test_condense_unified_diff_file_boundary_after_a_hunk() {
+        // A hunk must end at the next file for EVERY separator a unified-diff
+        // producer emits, not just `diff --git`. Keying it on `diff --git`
+        // alone collapsed files 2..N into the first, inflated its counter, and
+        // leaked the `---`/`+++` headers into the change list. `diff --cc` is
+        // git's own merge output, so this is not an exotic-tool concern.
+        for sep in [
+            "diff --git a/b.rs b/b.rs",
+            "diff --cc b.rs",
+            "diff -ru old/b.rs new/b.rs",
+            "Index: b.rs",
+        ] {
+            let diff = format!(
+                "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n\
+                 -old\n+new\n{sep}\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-x\n+y\n"
+            );
+            let r = condense_unified_diff(&diff);
+            assert_eq!(
+                r.lines().filter(|l| l.starts_with("[file]")).count(),
+                2,
+                "separator {sep:?} did not end the hunk:\n{r}"
+            );
+            assert!(r.contains("[file] a.rs (+1 -1)"), "sep {sep:?}:\n{r}");
+            assert!(r.contains("[file] b.rs (+1 -1)"), "sep {sep:?}:\n{r}");
+            assert!(
+                !r.lines().any(|l| l == "--- a/b.rs"),
+                "header leaked into content for {sep:?}:\n{r}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_condense_unified_diff_blank_line_does_not_end_hunk() {
+        // A context line whose trailing space was stripped in transit arrives
+        // empty. It must stay neutral: ending the hunk there would classify the
+        // rest of the file's changes as headers.
+        let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,4 +1,4 @@\n\
+                    -before\n\n+after\n";
+        let r = condense_unified_diff(diff);
+        assert!(r.lines().any(|l| l == "-before"), "got:\n{}", r);
+        assert!(r.lines().any(|l| l == "+after"), "got:\n{}", r);
+        assert!(r.contains("(+1 -1)"), "got:\n{}", r);
     }
 
     #[test]
