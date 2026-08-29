@@ -62,6 +62,14 @@ cold will not.
 - **Bisect regressions.** When A/B finds one, `git bisect` to the commit
   that introduced it — usually an earlier fix round that over-corrected.
   Fix at that root, not at the symptom.
+- **Probe with realistic input, and audit test inputs for realism.** A
+  test whose input can't occur in reality validates the wrong code path:
+  on #3199 the summary-cap tests omitted the `Running` lines real mvnd
+  always emits, so both "modules" collapsed onto the root lane and the
+  tests kept passing while the cap was inert on every real reactor. When
+  a fix changes routing/classification, re-ask of every green test:
+  "does this input still exercise the path it claims to?" Prefer probe
+  inputs modeled on the real fixtures over minimal synthetic shapes.
 
 ## Fix rounds
 
