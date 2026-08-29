@@ -2,6 +2,7 @@
 
 use crate::core::guard::never_worse;
 use crate::core::tracking;
+use crate::core::utils::strip_leading_bom;
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use std::fs;
@@ -92,7 +93,8 @@ pub fn run_stdin(max_depth: usize, schema_only: bool, verbose: u8) -> Result<()>
 /// Parse a JSON string and return compact representation with values preserved.
 /// Long strings are truncated, arrays are summarized.
 pub fn filter_json_compact(json_str: &str, max_depth: usize) -> Result<String> {
-    let value: Value = serde_json::from_str(json_str).context("Failed to parse JSON")?;
+    let value: Value =
+        serde_json::from_str(strip_leading_bom(json_str)).context("Failed to parse JSON")?;
     Ok(compact_json(&value, 0, max_depth))
 }
 
@@ -183,7 +185,8 @@ fn compact_json(value: &Value, depth: usize, max_depth: usize) -> String {
 /// Parse a JSON string and return its schema representation (types only, no values).
 /// Useful for piping JSON from other commands (e.g., `gh api`, `curl`).
 pub fn filter_json_string(json_str: &str, max_depth: usize) -> Result<String> {
-    let value: Value = serde_json::from_str(json_str).context("Failed to parse JSON")?;
+    let value: Value =
+        serde_json::from_str(strip_leading_bom(json_str)).context("Failed to parse JSON")?;
     Ok(extract_schema(&value, 0, max_depth))
 }
 
@@ -353,6 +356,25 @@ mod tests {
             "truncated value is {} bytes: {value}",
             value.len()
         );
+    }
+
+    #[test]
+    fn test_compact_parses_bom_prefixed_json() {
+        let json = "\u{feff}{\"name\": \"test\", \"count\": 42}";
+        let output = filter_json_compact(json, 5).expect("BOM-prefixed JSON must parse");
+        assert!(output.contains("name"));
+        assert!(output.contains("42"));
+        // Same input without BOM produces identical output.
+        assert_eq!(output, filter_json_compact(&json[3..], 5).unwrap());
+    }
+
+    #[test]
+    fn test_schema_parses_bom_prefixed_json() {
+        let json = "\u{feff}{\"name\": \"test\", \"count\": 42}";
+        let output = filter_json_string(json, 5).expect("BOM-prefixed JSON must parse");
+        assert!(output.contains("string"));
+        assert!(output.contains("int"));
+        assert_eq!(output, filter_json_string(&json[3..], 5).unwrap());
     }
 
     #[test]
