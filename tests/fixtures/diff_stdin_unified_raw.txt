@@ -1,0 +1,242 @@
+diff --git a/src/cmds/git/diff_cmd.rs b/src/cmds/git/diff_cmd.rs
+index 9ba69ed..cf139a9 100644
+--- a/src/cmds/git/diff_cmd.rs
++++ b/src/cmds/git/diff_cmd.rs
+@@ -364,31 +364,52 @@ fn condense_unified_diff(diff: &str) -> String {
+ 
+     // Never truncate diff content — users make decisions based on this data.
+     // Only strip diff metadata (headers, @@ hunks); all +/- lines shown in full.
++    //
++    // `---`/`+++` are ambiguous by prefix alone: `--- a/f` is a header, but a
++    // removed line whose content is `-- note` is also `--- note` on the wire.
++    // Position disambiguates them — a header only ever appears outside a hunk.
++    // Classifying by prefix alone dropped the content lines outright and let
++    // `+++ text` rename the file to a fragment of the user's own diff.
++    //
++    // `@@` opens a hunk. What closes one is the format invariant, not a list of
++    // separators: every line inside a hunk carries a ` `, `+`, `-` or `\`
++    // marker, so any other line has left it. Keying the close on `diff --git`
++    // instead would strand every producer that spells the separator otherwise —
++    // `diff --cc` (git's own merge output), `diff -ru`, `Index:` — collapsing
++    // their files into the first one. Empty stays neutral: a context line whose
++    // trailing space was stripped in transit must not end the hunk early.
++    let mut in_hunk = false;
+     for line in diff.lines() {
+-        if line.starts_with("diff --git") || line.starts_with("--- ") || line.starts_with("+++ ") {
+-            if line.starts_with("+++ ") {
+-                if !current_file.is_empty() && (added > 0 || removed > 0) {
+-                    result.push(format!("[file] {} (+{} -{})", current_file, added, removed));
+-                    for c in &changes {
+-                        result.push(format!("  {}", c));
+-                    }
+-                    let total = added + removed;
+-                    if total > 10 {
+-                        result.push(format!("  ... +{} more", total - 10));
+-                    }
++        if line.starts_with("@@") {
++            in_hunk = true;
++            continue;
++        }
++        if !line.is_empty() && !line.starts_with([' ', '+', '-', '\\']) {
++            in_hunk = false;
++        }
++        if !in_hunk && line.starts_with("+++ ") {
++            if !current_file.is_empty() && (added > 0 || removed > 0) {
++                result.push(format!("[file] {} (+{} -{})", current_file, added, removed));
++                // Column 0: anchored greps (`^[+-]`) must match these.
++                result.append(&mut changes);
++                let total = added + removed;
++                if total > 10 {
++                    result.push(format!("  ... +{} more", total - 10));
+                 }
+-                current_file = line
+-                    .trim_start_matches("+++ ")
+-                    .trim_start_matches("b/")
+-                    .to_string();
+-                added = 0;
+-                removed = 0;
+-                changes.clear();
+             }
+-        } else if line.starts_with('+') && !line.starts_with("+++") {
++            current_file = line
++                .trim_start_matches("+++ ")
++                .trim_start_matches("b/")
++                .to_string();
++            added = 0;
++            removed = 0;
++            changes.clear();
++        } else if !in_hunk && line.starts_with("--- ") {
++            // Old-file header; the new-file header above carries the name.
++        } else if line.starts_with('+') {
+             added += 1;
+             changes.push(line.to_string());
+-        } else if line.starts_with('-') && !line.starts_with("---") {
++        } else if line.starts_with('-') {
+             removed += 1;
+             changes.push(line.to_string());
+         }
+@@ -397,9 +418,8 @@ fn condense_unified_diff(diff: &str) -> String {
+     // Last file
+     if !current_file.is_empty() && (added > 0 || removed > 0) {
+         result.push(format!("[file] {} (+{} -{})", current_file, added, removed));
+-        for c in &changes {
+-            result.push(format!("  {}", c));
+-        }
++        // Column 0: anchored greps (`^[+-]`) must match these.
++        result.append(&mut changes);
+         let total = added + removed;
+         if total > 10 {
+             result.push(format!("  ... +{} more", total - 10));
+@@ -772,6 +792,152 @@ diff --git a/b.rs b/b.rs
+         assert!(result.contains("b.rs"));
+     }
+ 
++    #[test]
++    fn test_condense_unified_diff_markers_at_column_0() {
++        // Same silent-false-negative class as compact_diff (#118 / upstream
++        // #3646): indented markers make anchored greps (`^[+-]`) match nothing.
++        //
++        // Two files on purpose. A file's changes are flushed at two separate
++        // sites: once per `+++` for the preceding file, once after the loop for
++        // the last one. A single-file fixture only ever reaches the second, so
++        // the first could be reverted with the whole suite still green.
++        let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n\
++                    -fn old() {}\n+fn new() {}\n\
++                    diff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n\
++                    -let x = 1;\n+let x = 2;\n";
++        let result = condense_unified_diff(diff);
++        for want in ["-fn old() {}", "+fn new() {}", "-let x = 1;", "+let x = 2;"] {
++            assert!(
++                result.lines().any(|l| l == want),
++                "missing {want:?} at column 0 in:\n{}",
++                result
++            );
++        }
++        // Scoped to change lines. The `  ... +N more` trailer is indented and
++        // is not a change line, so a blanket "no line starts with a space"
++        // would be false for any diff with more than ten changes.
++        assert!(
++            !result
++                .lines()
++                .any(|l| l.starts_with(" +") || l.starts_with(" -")),
++            "change lines must not be indented:\n{}",
++            result
++        );
++    }
++
++    #[test]
++    fn test_condense_unified_diff_keeps_plusplus_and_minusminus_content() {
++        // Only `--- a/f` and `+++ b/f` (trailing space) are headers. A changed
++        // line whose content is `---`/`+++` is real content: Markdown rules and
++        // front-matter fences, `++i`, SQL `-- comment`. Dropping it loses the
++        // line and desyncs the (+N -M) counter.
++        let diff = "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n\
++                    @@ -1,2 +1,2 @@\n---\n-title: Old\n+++\n+title = \"New\"\n";
++        let result = condense_unified_diff(diff);
++        assert!(result.lines().any(|l| l == "---"), "got:\n{}", result);
++        assert!(result.lines().any(|l| l == "+++"), "got:\n{}", result);
++        assert!(
++            result.contains("(+2 -2)"),
++            "counter must include the ---/+++ lines:\n{}",
++            result
++        );
++    }
++
++    #[test]
++    fn test_condense_unified_diff_keeps_dashdash_comment_content() {
++        // A removed line whose content is `-- note` arrives as `--- note`, which
++        // is prefix-identical to the `--- a/file` header. SQL/Lua/Haskell/Ada
++        // comments and mail signature delimiters all land here. Dropping them
++        // loses the lines and desyncs the counter.
++        let diff = "diff --git a/m.sql b/m.sql\n--- a/m.sql\n+++ b/m.sql\n\
++                    @@ -1,3 +1,1 @@\n--- Legacy bootstrap\n--- DO NOT RUN\n-  email TEXT,\n";
++        let result = condense_unified_diff(diff);
++        assert!(
++            result.lines().any(|l| l == "--- Legacy bootstrap"),
++            "got:\n{}",
++            result
++        );
++        assert!(
++            result.lines().any(|l| l == "--- DO NOT RUN"),
++            "got:\n{}",
++            result
++        );
++        assert!(
++            result.contains("(+0 -3)"),
++            "counter must count all three removals:\n{}",
++            result
++        );
++        assert!(result.contains("[file] m.sql"), "got:\n{}", result);
++    }
++
++    #[test]
++    fn test_condense_unified_diff_plusplus_content_does_not_rename_file() {
++        // An added line whose content is `++ text` arrives as `+++ text`, which
++        // is prefix-identical to the `+++ b/file` header. Treating it as one
++        // renamed the file to a fragment of the user's own diff and dropped the
++        // line — the filename in the output was no longer a filename at all.
++        let diff = "diff --git a/c.md b/c.md\n--- a/c.md\n+++ b/c.md\n\
++                    @@ -1,2 +1,2 @@\n+++ new section marker\n-- removed a feature\n";
++        let result = condense_unified_diff(diff);
++        assert!(result.contains("[file] c.md"), "got:\n{}", result);
++        assert!(
++            !result.contains("[file] new section marker"),
++            "content must not become the file name:\n{}",
++            result
++        );
++        assert!(
++            result.lines().any(|l| l == "+++ new section marker"),
++            "got:\n{}",
++            result
++        );
++        assert!(result.contains("(+1 -1)"), "got:\n{}", result);
++    }
++
++    #[test]
++    fn test_condense_unified_diff_file_boundary_after_a_hunk() {
++        // A hunk must end at the next file for EVERY separator a unified-diff
++        // producer emits, not just `diff --git`. Keying it on `diff --git`
++        // alone collapsed files 2..N into the first, inflated its counter, and
++        // leaked the `---`/`+++` headers into the change list. `diff --cc` is
++        // git's own merge output, so this is not an exotic-tool concern.
++        for sep in [
++            "diff --git a/b.rs b/b.rs",
++            "diff --cc b.rs",
++            "diff -ru old/b.rs new/b.rs",
++            "Index: b.rs",
++        ] {
++            let diff = format!(
++                "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n\
++                 -old\n+new\n{sep}\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-x\n+y\n"
++            );
++            let r = condense_unified_diff(&diff);
++            assert_eq!(
++                r.lines().filter(|l| l.starts_with("[file]")).count(),
++                2,
++                "separator {sep:?} did not end the hunk:\n{r}"
++            );
++            assert!(r.contains("[file] a.rs (+1 -1)"), "sep {sep:?}:\n{r}");
++            assert!(r.contains("[file] b.rs (+1 -1)"), "sep {sep:?}:\n{r}");
++            assert!(
++                !r.lines().any(|l| l == "--- a/b.rs"),
++                "header leaked into content for {sep:?}:\n{r}"
++            );
++        }
++    }
++
++    #[test]
++    fn test_condense_unified_diff_blank_line_does_not_end_hunk() {
++        // A context line whose trailing space was stripped in transit arrives
++        // empty. It must stay neutral: ending the hunk there would classify the
++        // rest of the file's changes as headers.
++        let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,4 +1,4 @@\n\
++                    -before\n\n+after\n";
++        let r = condense_unified_diff(diff);
++        assert!(r.lines().any(|l| l == "-before"), "got:\n{}", r);
++        assert!(r.lines().any(|l| l == "+after"), "got:\n{}", r);
++        assert!(r.contains("(+1 -1)"), "got:\n{}", r);
++    }
++
+     #[test]
+     fn test_condense_unified_diff_empty() {
+         let result = condense_unified_diff("");
