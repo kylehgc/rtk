@@ -364,32 +364,41 @@ fn condense_unified_diff(diff: &str) -> String {
 
     // Never truncate diff content — users make decisions based on this data.
     // Only strip diff metadata (headers, @@ hunks); all +/- lines shown in full.
+    //
+    // `---`/`+++` are ambiguous by prefix alone: `--- a/f` is a header, but a
+    // removed line whose content is `-- note` is also `--- note` on the wire.
+    // Position disambiguates them for free — a header only ever appears outside
+    // a hunk. Classifying by prefix alone dropped the content lines outright and
+    // let `+++ text` rename the file to a fragment of the user's own diff.
+    let mut in_hunk = false;
     for line in diff.lines() {
-        if line.starts_with("diff --git") || line.starts_with("--- ") || line.starts_with("+++ ") {
-            if line.starts_with("+++ ") {
-                if !current_file.is_empty() && (added > 0 || removed > 0) {
-                    result.push(format!("[file] {} (+{} -{})", current_file, added, removed));
-                    // Column 0: anchored greps (`^[+-]`) must match these.
-                    result.append(&mut changes);
-                    let total = added + removed;
-                    if total > 10 {
-                        result.push(format!("  ... +{} more", total - 10));
-                    }
+        if line.starts_with("@@") {
+            in_hunk = true;
+        } else if line.starts_with("diff --git") {
+            in_hunk = false;
+        } else if !in_hunk && line.starts_with("+++ ") {
+            if !current_file.is_empty() && (added > 0 || removed > 0) {
+                result.push(format!("[file] {} (+{} -{})", current_file, added, removed));
+                // Column 0: anchored greps (`^[+-]`) must match these.
+                result.append(&mut changes);
+                let total = added + removed;
+                if total > 10 {
+                    result.push(format!("  ... +{} more", total - 10));
                 }
-                current_file = line
-                    .trim_start_matches("+++ ")
-                    .trim_start_matches("b/")
-                    .to_string();
-                added = 0;
-                removed = 0;
-                changes.clear();
             }
-        } else if line.starts_with('+') && !line.starts_with("+++ ") {
-            // Trailing space: only `+++ b/file` is a header. A changed line whose
-            // content is `+++` (Markdown rule, `++i`) is content and must survive.
+            current_file = line
+                .trim_start_matches("+++ ")
+                .trim_start_matches("b/")
+                .to_string();
+            added = 0;
+            removed = 0;
+            changes.clear();
+        } else if !in_hunk && line.starts_with("--- ") {
+            // Old-file header; the new-file header above carries the name.
+        } else if line.starts_with('+') {
             added += 1;
             changes.push(line.to_string());
-        } else if line.starts_with('-') && !line.starts_with("--- ") {
+        } else if line.starts_with('-') {
             removed += 1;
             changes.push(line.to_string());
         }
@@ -793,9 +802,9 @@ diff --git a/b.rs b/b.rs
                 result
             );
         }
-        // Scoped to change lines: the `  ... +N more` trailer is legitimately
-        // indented, so a blanket "no line starts with a space" would be false
-        // for any diff with more than ten changes.
+        // Scoped to change lines. The `  ... +N more` trailer is indented and
+        // is not a change line, so a blanket "no line starts with a space"
+        // would be false for any diff with more than ten changes.
         assert!(
             !result
                 .lines()
@@ -821,6 +830,56 @@ diff --git a/b.rs b/b.rs
             "counter must include the ---/+++ lines:\n{}",
             result
         );
+    }
+
+    #[test]
+    fn test_condense_unified_diff_keeps_dashdash_comment_content() {
+        // A removed line whose content is `-- note` arrives as `--- note`, which
+        // is prefix-identical to the `--- a/file` header. SQL/Lua/Haskell/Ada
+        // comments and mail signature delimiters all land here. Dropping them
+        // loses the lines and desyncs the counter.
+        let diff = "diff --git a/m.sql b/m.sql\n--- a/m.sql\n+++ b/m.sql\n\
+                    @@ -1,3 +1,1 @@\n--- Legacy bootstrap\n--- DO NOT RUN\n-  email TEXT,\n";
+        let result = condense_unified_diff(diff);
+        assert!(
+            result.lines().any(|l| l == "--- Legacy bootstrap"),
+            "got:\n{}",
+            result
+        );
+        assert!(
+            result.lines().any(|l| l == "--- DO NOT RUN"),
+            "got:\n{}",
+            result
+        );
+        assert!(
+            result.contains("(+0 -3)"),
+            "counter must count all three removals:\n{}",
+            result
+        );
+        assert!(result.contains("[file] m.sql"), "got:\n{}", result);
+    }
+
+    #[test]
+    fn test_condense_unified_diff_plusplus_content_does_not_rename_file() {
+        // An added line whose content is `++ text` arrives as `+++ text`, which
+        // is prefix-identical to the `+++ b/file` header. Treating it as one
+        // renamed the file to a fragment of the user's own diff and dropped the
+        // line — the filename in the output was no longer a filename at all.
+        let diff = "diff --git a/c.md b/c.md\n--- a/c.md\n+++ b/c.md\n\
+                    @@ -1,2 +1,2 @@\n+++ new section marker\n-- removed a feature\n";
+        let result = condense_unified_diff(diff);
+        assert!(result.contains("[file] c.md"), "got:\n{}", result);
+        assert!(
+            !result.contains("[file] new section marker"),
+            "content must not become the file name:\n{}",
+            result
+        );
+        assert!(
+            result.lines().any(|l| l == "+++ new section marker"),
+            "got:\n{}",
+            result
+        );
+        assert!(result.contains("(+1 -1)"), "got:\n{}", result);
     }
 
     #[test]
