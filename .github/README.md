@@ -48,7 +48,7 @@ output *larger* and more correct. This fork does not claim to save more tokens t
 upstream — that is upstream's pitch. It claims to not lose your errors.
 
 <!-- FORK_DELTA_START -->
-**44 fixes in this fork that upstream does not have.** Each links to the commit,
+**45 fixes in this fork that upstream does not have.** Each links to the commit,
 where the original author is recorded. Adopted fixes come from community PRs that upstream
 has not merged — see the [adoption issues](https://github.com/kylehgc/rtk/issues?q=is%3Aissue+Adopt+upstream)
 for provenance.
@@ -60,6 +60,7 @@ upstream in another form.
 
 | Fix | Commit |
 |---|---|
+| fix(json,deps): tolerate UTF-8 BOM at the three remaining JSON parse sites | [`c7d6fe3`](https://github.com/kylehgc/rtk/commit/c7d6fe3) |
 | fix(lint): guard known linter names from the on-disk path check, bound failure passthrough | [`3240075`](https://github.com/kylehgc/rtk/commit/3240075) |
 | fix(hook): delegate lint scripts to package managers | [`cae0f21`](https://github.com/kylehgc/rtk/commit/cae0f21) |
 | fix(lint): stop reading a bare path as a linter name | [`617ef8e`](https://github.com/kylehgc/rtk/commit/617ef8e) |
