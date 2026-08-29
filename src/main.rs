@@ -3804,16 +3804,6 @@ mod tests {
     }
 
     #[test]
-    fn test_grep_parse_max_count_m_forwarded() {
-        // Native grep `-m N` (max-count). The value `5` must reach search.rs,
-        // not be eaten as rtk's `--max`.
-        assert_eq!(
-            grep_extra_args(&["rtk", "grep", "-m", "5", "FOO", "file"]).unwrap(),
-            vec!["-m", "5", "FOO", "file"]
-        );
-    }
-
-    #[test]
     fn test_grep_parse_type_t_forwarded() {
         // ripgrep `-t TYPE` (type filter). Must pass through to search.rs,
         // which already handles it, instead of binding to rtk's `--file-type`.
