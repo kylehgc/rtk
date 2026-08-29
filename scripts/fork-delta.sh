@@ -22,6 +22,10 @@ END="<!-- FORK_DELTA_END -->"
 # Fork-process scopes. Real commits, but they change how the fork is maintained,
 # not what rtk does — a visitor evaluating the binary does not care about them.
 # `fork` is here because the landing page must not advertise itself as a fix.
+# Matched against compound scopes too, but only when EVERY component is a
+# process scope: `fix(docs,test)` is excluded, `fix(git,docs)` still counts
+# because it also changes behavior. Without the compound form a commit like
+# `fix(docs,test): ...` slipped onto the landing page as a fix upstream lacks.
 EXCLUDE_SCOPES="skills|review|sync|context|docs|ci|cicd|test|fork"
 
 # Healed divergence (#88): fork commits upstream has since merged or superseded
@@ -85,7 +89,7 @@ while IFS=$'\t' read -r full short subject; do
 done < <(
   git log "$UPSTREAM_REF..HEAD" --no-merges --format='%H%x09%h%x09%s' \
     | grep -E "	(feat|fix)" \
-    | grep -vE "	(feat|fix)\((${EXCLUDE_SCOPES})\)"
+    | grep -vE "	(feat|fix)\((${EXCLUDE_SCOPES})(,(${EXCLUDE_SCOPES}))*\)"
 )
 echo "  healed divergence excluded: ${dropped_auto} by patch-id, ${dropped_audit} audited" >&2
 
