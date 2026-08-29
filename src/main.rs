@@ -313,18 +313,23 @@ enum Commands {
 
     /// Compact grep - strips whitespace, truncates, groups by file
     Grep {
-        // NOTE: these rtk-tuning options are intentionally long-only. Their
-        // natural short forms (`-l`, `-m`, `-t`) collide with native grep/rg
-        // flags of the same letter (files-with-matches, max-count, type) which
-        // users routinely pass. A short option here shadows the native flag and
-        // either crashes clap (`-l <pattern>` is not a `usize`) or silently
-        // applies the wrong semantics, defeating the `extra_args` passthrough.
-        // Keep these long-only so native flags reach search.rs. (Completes the
+        // NOTE: `-l` and `-t` are long-only here for the same reason upstream
+        // made `--max` long-only below: they collide with native grep/rg flags
+        // of the same letter (files-with-matches, type) that users routinely
+        // pass. A short option shadows the native flag and either crashes clap
+        // (`-l <pattern>` is not a `usize`) or silently applies the wrong
+        // semantics, defeating the `extra_args` passthrough. (Completes the
         // `-v`/`-n`/pattern/path cleanup from 84616d1.)
         /// Max line length
         #[arg(long, default_value = "80")]
         max_len: usize,
         /// Max results to show
+        // No short: `-m` is GNU grep's --max-count (stop after N matches per
+        // file). Deriving it to RTK's --max (a display cap) silently swallowed
+        // `-m N` so grep never saw the real --max-count. Without the short, `-m`
+        // flows to extra_args and is forwarded verbatim to grep/rg, which applies
+        // genuine --max-count while RTK still compacts (matches how `rtk rg -m`
+        // already behaves). --max keeps its long form.
         #[arg(long, default_value = "200")]
         max: usize,
         /// Show only match context (not full line)
@@ -3004,6 +3009,24 @@ mod tests {
     }
 
     #[test]
+    fn test_try_parse_grep_dash_m_is_max_count() {
+        // Regression: `-m` is GNU grep's --max-count, not RTK's --max. It must
+        // parse (not consume the pattern), keep `max` at its default, and reach
+        // extra_args so it is forwarded to grep as a real --max-count.
+        let cli = Cli::try_parse_from(["rtk", "grep", "-m", "5", "pattern", "file"]).unwrap();
+
+        match cli.command {
+            Commands::Grep {
+                max, extra_args, ..
+            } => {
+                assert_eq!(max, 200, "max must stay at its default, not consume `-m`");
+                assert_eq!(extra_args, vec!["-m", "5", "pattern", "file"]);
+            }
+            _ => panic!("Expected Grep command"),
+        }
+    }
+
+    #[test]
     fn test_try_parse_init_agent_hermes_uninstall() {
         let cli = Cli::try_parse_from(["rtk", "init", "--agent", "hermes", "--uninstall"]).unwrap();
         match cli.command {
@@ -3777,16 +3800,6 @@ mod tests {
         assert_eq!(
             grep_extra_args(&["rtk", "grep", "-l", "FOO", "src/"]).unwrap(),
             vec!["-l", "FOO", "src/"]
-        );
-    }
-
-    #[test]
-    fn test_grep_parse_max_count_m_forwarded() {
-        // Native grep `-m N` (max-count). The value `5` must reach search.rs,
-        // not be eaten as rtk's `--max`.
-        assert_eq!(
-            grep_extra_args(&["rtk", "grep", "-m", "5", "FOO", "file"]).unwrap(),
-            vec!["-m", "5", "FOO", "file"]
         );
     }
 

@@ -1,9 +1,12 @@
 //! Reduction claim: `rtk tsc` must compress `tsc --noEmit --pretty` output
 //! (ANSI colors, code frames, carets) at least as well as it compresses the
-//! plain `file(line,col): error TSxxxx` format it already handled. Upstream
-//! only recognizes the plain format — its regex doesn't match pretty
-//! diagnostics and it never strips ANSI before trying, so on pretty output
-//! it parses zero diagnostics and falls back to a near-passthrough summary.
+//! plain `file(line,col): error TSxxxx` format it already handled.
+//!
+//! Upstream now parses the pretty format itself (`fix(tsc): handle pretty
+//! diagnostics`, 9d1c60a, adopted in the 2026-08-29 sync), so the parsing gap
+//! this file was written against is closed. What stays fork-only is the
+//! coverage: upstream asserts no token-savings floor for this filter, and has
+//! no end-to-end test driving the built binary. This keeps both.
 //!
 //! `filter_tsc_output` lives in `src/cmds/js/tsc_cmd.rs`, unreachable from a
 //! portable test directly. But `rtk pipe --filter tsc` (`src/cmds/system/
