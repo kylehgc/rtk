@@ -126,12 +126,18 @@ pub fn run_stdin(_verbose: u8) -> Result<()> {
     use std::io::{self, Read};
     let timer = tracking::TimedExecution::start();
 
-    let mut input = String::new();
-    io::stdin().read_to_string(&mut input)?;
+    // Bytes, not String: piped diffs are not guaranteed UTF-8 (patches quote
+    // the target file's bytes), and a hard error here loses the user's output.
+    let mut bytes = Vec::new();
+    io::stdin().read_to_end(&mut bytes)?;
+    let input = String::from_utf8_lossy(&bytes);
+    // `git diff --color` (or color.ui=always through a pipe) prefixes every
+    // line with an escape sequence; without stripping, nothing matches and
+    // the condensed output is silently empty.
+    let cleaned = crate::core::utils::strip_ansi(&input);
 
-    // Parse unified diff format
-    let condensed = condense_unified_diff(&input);
-    let shown = never_worse(&input, &condensed);
+    let condensed = condense_unified_diff(&cleaned);
+    let shown = never_worse(&cleaned, &condensed);
     println!("{}", shown);
 
     timer.track("diff (stdin)", "rtk diff (stdin)", &input, shown);
@@ -355,56 +361,369 @@ fn similarity(a: &str, b: &str) -> f64 {
     }
 }
 
+/// Condense a unified-diff stream: one `[file]` label per file section, every
+/// `+`/`-` content line kept verbatim at column 0, all metadata dropped.
+///
+/// Never truncates diff content — users make decisions based on this data.
+/// If the stream disagrees with its own structure (see the detector order on
+/// [`condense_unified_diff_strict`]), the input passes through unchanged
+/// rather than risking silent loss.
 fn condense_unified_diff(diff: &str) -> String {
-    let mut result = Vec::new();
-    let mut current_file = String::new();
-    let mut added = 0;
-    let mut removed = 0;
-    let mut changes = Vec::new();
+    condense_unified_diff_strict(diff).unwrap_or_else(|| diff.to_string())
+}
 
-    // Never truncate diff content — users make decisions based on this data.
-    // Only strip diff metadata (headers, @@ hunks); all +/- lines shown in full.
-    for line in diff.lines() {
-        if line.starts_with("diff --git") || line.starts_with("--- ") || line.starts_with("+++ ") {
-            if line.starts_with("+++ ") {
-                if !current_file.is_empty() && (added > 0 || removed > 0) {
-                    result.push(format!("[file] {} (+{} -{})", current_file, added, removed));
-                    // Column 0: anchored greps (`^[+-]`) must match these.
-                    result.append(&mut changes);
-                    let total = added + removed;
-                    if total > 10 {
-                        result.push(format!("  ... +{} more", total - 10));
+/// One parsed file section of the stream.
+#[derive(Default)]
+struct FileEntry {
+    name: String,
+    added: usize,
+    removed: usize,
+    changes: Vec<String>,
+    notes: Vec<String>,
+    /// A `rename from X` seen while this section's header was still open.
+    rename_from: Option<String>,
+    /// True once a `@@` hunk header was accepted for this section. Gates the
+    /// header-pair rule: a `---`/`+++` pair renames a hunkless section in
+    /// place (git's extended header precedes them) but flushes one that
+    /// already carries hunks (plain `diff -u` concatenates files that way).
+    saw_hunk: bool,
+}
+
+impl FileEntry {
+    fn header_only(&self) -> bool {
+        !self.saw_hunk && self.changes.is_empty()
+    }
+    fn is_empty(&self) -> bool {
+        self.changes.is_empty() && self.notes.is_empty()
+    }
+}
+
+/// Remaining line budget of an open hunk, from its `@@ -a,b +c,d @@` header
+/// (one `old_left` slot per parent; `@@@` combined headers carry two or more).
+struct HunkBudget {
+    old_left: Vec<usize>,
+    new_left: usize,
+}
+
+impl HunkBudget {
+    fn exhausted(&self) -> bool {
+        self.new_left == 0 && self.old_left.iter().all(|&n| n == 0)
+    }
+}
+
+/// True for the mbox `From <40-hex-sha> <date>` separator `git format-patch`
+/// puts before each patch.
+fn is_mbox_from(line: &str) -> bool {
+    line.strip_prefix("From ").is_some_and(|rest| {
+        let b = rest.as_bytes();
+        b.len() > 40 && b[..40].iter().all(|c| c.is_ascii_hexdigit()) && b[40] == b' '
+    })
+}
+
+/// `--- <name>` / `+++ <name>` → display name: the `+++` side unless it is
+/// `/dev/null` (a deletion), then the `--- ` side. One `b/`/`a/` prefix is
+/// stripped (exactly once — `b/b/x` names a file in a `b/` directory), and
+/// anything after the first tab (`diff -u` timestamps, svn `(working copy)`)
+/// is dropped.
+fn header_name(minus: &str, plus: &str) -> String {
+    fn clean(side: &str, prefix: &str) -> String {
+        let side = side.split('\t').next().unwrap_or(side);
+        side.strip_prefix(prefix).unwrap_or(side).to_string()
+    }
+    let p = clean(plus, "b/");
+    if p == "/dev/null" {
+        clean(minus, "a/")
+    } else {
+        p
+    }
+}
+
+/// Parse `@@ -a[,b] +c[,d] @@ ...` (and `@@@ -a,b -c,d +e,f @@@ ...` with one
+/// `-` range per parent) into per-parent old-line budgets and the new-line
+/// budget. Omitted counts default to 1 per the unified-diff spec.
+fn parse_hunk_header(line: &str) -> Option<(Vec<usize>, usize)> {
+    fn parse_range(tok: &str, sign: char) -> Option<usize> {
+        let tok = tok.strip_prefix(sign)?;
+        match tok.split_once(',') {
+            Some((start, count)) => {
+                start.parse::<usize>().ok()?;
+                count.parse().ok()
+            }
+            None => {
+                tok.parse::<usize>().ok()?;
+                Some(1)
+            }
+        }
+    }
+
+    let ats = line.bytes().take_while(|&b| b == b'@').count();
+    // 2..=9: parents beyond 8 (an implausible octopus) fall back to raw.
+    if !(2..=9).contains(&ats) {
+        return None;
+    }
+    let parents = ats - 1;
+    let mut toks = line[ats..].split(' ').filter(|t| !t.is_empty());
+    let mut old_left = Vec::with_capacity(parents);
+    for _ in 0..parents {
+        old_left.push(parse_range(toks.next()?, '-')?);
+    }
+    let new_left = parse_range(toks.next()?, '+')?;
+    let close = toks.next()?;
+    if close.len() != ats || !close.bytes().all(|b| b == b'@') {
+        return None;
+    }
+    Some((old_left, new_left))
+}
+
+/// Region parser for unified-diff streams. Splits the input into
+/// (prose)(file-header)(hunk)* regions and classifies lines only within their
+/// region; `None` means the stream disagreed with its own structure and the
+/// caller must fall back to raw passthrough.
+///
+/// Detector precedence, total order — earlier rules own the line:
+///
+/// 1. Inside a hunk, the `@@` line budget owns every line. An invalid body
+///    prefix, a budget over-consumed by one more body line, or EOF with
+///    budget still owed → `None`. (Hunks close the moment the budget hits
+///    zero, so a `@@` or file header arriving while a hunk is open is itself
+///    budget-owed → the invalid-prefix arm returns `None`.)
+/// 2. An mbox `From <sha>` separator resets to the prose prologue.
+/// 3. `diff --git` / `diff --cc` opens a file section (git extended headers
+///    such as `rename`/`Binary files`/mode lines annotate it).
+/// 4. A `--- X` line immediately followed by `+++ Y` is a file header: it
+///    renames a still-hunkless section in place, or opens a new one. This is
+///    what ends the prose prologue — the prologue is positional (everything
+///    before the first file header), never keyed on line values.
+/// 5. `@@` after a file header opens a hunk; a malformed `@@` line there is
+///    `None`. Before any file section (a hunk quoted in commit prose) it
+///    stays prose.
+/// 6. A line of exactly `--`/`-- ` outside a hunk is the format-patch
+///    signature separator: prose. This is the single value-keyed exclusion,
+///    kept because every patch `git format-patch` emits ends with one; its
+///    body (`2.54.0`) is unmarked and needs no region.
+/// 7. Any other `+`/`-` marked line outside a hunk and after the prologue is
+///    evidence of a stale or under-declared budget → `None`. (Well-formed
+///    unified diffs have no content outside hunks.)
+/// 8. Everything else is prose and is dropped.
+fn condense_unified_diff_strict(diff: &str) -> Option<String> {
+    let mut lines: Vec<&str> = diff.split('\n').collect();
+    if lines.last() == Some(&"") {
+        lines.pop();
+    }
+
+    let mut entries: Vec<FileEntry> = Vec::new();
+    let mut current: Option<FileEntry> = None;
+    let mut hunk: Option<HunkBudget> = None;
+    // Stream start is the prologue: mbox headers, commit message, diffstat.
+    let mut in_prologue = true;
+
+    fn flush(entries: &mut Vec<FileEntry>, current: &mut Option<FileEntry>) {
+        if let Some(e) = current.take() {
+            if !e.is_empty() {
+                entries.push(e);
+            }
+        }
+    }
+
+    let mut i = 0;
+    while i < lines.len() {
+        let raw = lines[i];
+        // Structural decisions ignore a trailing CR (CRLF streams); content
+        // lines are pushed raw so the user's bytes survive verbatim.
+        let line = raw.strip_suffix('\r').unwrap_or(raw);
+        i += 1;
+
+        // Rule 1: the open hunk's budget owns the line.
+        if let Some(h) = hunk.as_mut() {
+            if line.starts_with('\\') {
+                // "\ No newline at end of file": hunk metadata, no budget.
+                continue;
+            }
+            let parents = h.old_left.len();
+            let mut prefix: Vec<char> = line.chars().take(parents).collect();
+            // Mailers strip trailing whitespace, so an all-context line may
+            // arrive shorter than the prefix width: pad as context.
+            while prefix.len() < parents {
+                prefix.push(' ');
+            }
+            if !prefix.iter().all(|c| matches!(c, ' ' | '-' | '+')) {
+                return None;
+            }
+            let in_result = !prefix.contains(&'-');
+            for (k, left) in h.old_left.iter_mut().enumerate() {
+                // Present in parent k: removed relative to it, or unchanged
+                // and present in the result (a ' ' column on a line some
+                // other parent removed is filler, not presence).
+                if prefix[k] == '-' || (prefix[k] == ' ' && in_result) {
+                    *left = left.checked_sub(1)?;
+                }
+            }
+            if in_result {
+                h.new_left = h.new_left.checked_sub(1)?;
+            }
+            let entry = current.as_mut()?;
+            if prefix.contains(&'-') {
+                entry.removed += 1;
+                entry.changes.push(raw.to_string());
+            } else if prefix.contains(&'+') {
+                entry.added += 1;
+                entry.changes.push(raw.to_string());
+            }
+            if h.exhausted() {
+                hunk = None;
+            }
+            continue;
+        }
+
+        // Rule 2: mbox patch separator → back to the prose prologue.
+        if is_mbox_from(line) {
+            flush(&mut entries, &mut current);
+            in_prologue = true;
+            continue;
+        }
+
+        // Rule 3: git file section with extended headers.
+        if let Some(rest) = line
+            .strip_prefix("diff --git ")
+            .or_else(|| line.strip_prefix("diff --cc "))
+            .or_else(|| line.strip_prefix("diff --combined "))
+        {
+            flush(&mut entries, &mut current);
+            in_prologue = false;
+            // Fallback name only; `rename to` or the `+++` header refine it.
+            let name = rest
+                .rfind(" b/")
+                .map(|p| &rest[p + 3..])
+                .unwrap_or(rest)
+                .to_string();
+            current = Some(FileEntry {
+                name,
+                ..FileEntry::default()
+            });
+            continue;
+        }
+        if let Some(e) = current.as_mut().filter(|e| e.header_only()) {
+            if line.starts_with("Binary files ") || line == "GIT binary patch" {
+                e.notes.push("binary".to_string());
+                continue;
+            }
+            if let Some(from) = line.strip_prefix("rename from ") {
+                e.rename_from = Some(from.to_string());
+                continue;
+            }
+            if let Some(to) = line.strip_prefix("rename to ") {
+                e.name = to.to_string();
+                let from = e.rename_from.take().unwrap_or_default();
+                e.notes.push(format!("renamed from {}", from));
+                continue;
+            }
+            if let Some(from) = line.strip_prefix("copy from ") {
+                e.rename_from = Some(from.to_string());
+                continue;
+            }
+            if let Some(to) = line.strip_prefix("copy to ") {
+                e.name = to.to_string();
+                let from = e.rename_from.take().unwrap_or_default();
+                e.notes.push(format!("copied from {}", from));
+                continue;
+            }
+            if (line.starts_with("old mode ") || line.starts_with("new mode "))
+                && !e.notes.iter().any(|n| n == "mode changed")
+            {
+                e.notes.push("mode changed".to_string());
+                continue;
+            }
+        }
+
+        // Rule 4: `--- X` + `+++ Y` header pair.
+        if let Some(minus) = line.strip_prefix("--- ") {
+            let next = lines
+                .get(i)
+                .map(|r| r.strip_suffix('\r').unwrap_or(r))
+                .and_then(|n| n.strip_prefix("+++ "));
+            if let Some(plus) = next {
+                let name = header_name(minus, plus);
+                match current.as_mut().filter(|e| e.header_only()) {
+                    Some(e) => e.name = name,
+                    None => {
+                        flush(&mut entries, &mut current);
+                        current = Some(FileEntry {
+                            name,
+                            ..FileEntry::default()
+                        });
                     }
                 }
-                current_file = line
-                    .trim_start_matches("+++ ")
-                    .trim_start_matches("b/")
-                    .to_string();
-                added = 0;
-                removed = 0;
-                changes.clear();
+                in_prologue = false;
+                i += 1; // consume the `+++` line too
+                continue;
             }
-        } else if line.starts_with('+') && !line.starts_with("+++") {
-            added += 1;
-            changes.push(line.to_string());
-        } else if line.starts_with('-') && !line.starts_with("---") {
-            removed += 1;
-            changes.push(line.to_string());
         }
+
+        // Rule 5: hunk header.
+        if line.starts_with("@@") {
+            match parse_hunk_header(line) {
+                Some((old_left, new_left)) if current.is_some() => {
+                    if let Some(e) = current.as_mut() {
+                        e.saw_hunk = true;
+                    }
+                    let h = HunkBudget { old_left, new_left };
+                    // `@@ -0,0 +0,0 @@` closes before it opens.
+                    if !h.exhausted() {
+                        hunk = Some(h);
+                    }
+                    continue;
+                }
+                Some(_) => continue, // quoted hunk in prose, no file section
+                None if current.is_some() && !in_prologue => return None,
+                None => continue,
+            }
+        }
+
+        // Rule 6: format-patch signature separator.
+        if line == "--" || line == "-- " {
+            continue;
+        }
+
+        // Rule 7: content outside any hunk → stale budget, fall back.
+        if (line.starts_with('+') || line.starts_with('-')) && !in_prologue {
+            return None;
+        }
+
+        // Rule 8: prose.
     }
 
-    // Last file
-    if !current_file.is_empty() && (added > 0 || removed > 0) {
-        result.push(format!("[file] {} (+{} -{})", current_file, added, removed));
+    // Budget owed at EOF.
+    if hunk.is_some() {
+        return None;
+    }
+    flush(&mut entries, &mut current);
+
+    if entries.is_empty() {
+        // Nothing recognizable as a diff (plain text, --stat output, empty
+        // input): pass through rather than emitting nothing.
+        return None;
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    for e in entries {
+        let label = if e.notes.is_empty() {
+            format!("[file] {} (+{} -{})", e.name, e.added, e.removed)
+        } else if e.changes.is_empty() {
+            format!("[file] {} ({})", e.name, e.notes.join(", "))
+        } else {
+            format!(
+                "[file] {} ({}) (+{} -{})",
+                e.name,
+                e.notes.join(", "),
+                e.added,
+                e.removed
+            )
+        };
+        out.push(label);
         // Column 0: anchored greps (`^[+-]`) must match these.
-        result.append(&mut changes);
-        let total = added + removed;
-        if total > 10 {
-            result.push(format!("  ... +{} more", total - 10));
-        }
+        out.extend(e.changes);
     }
-
-    result.join("\n")
+    Some(out.join("\n"))
 }
 
 #[cfg(test)]
@@ -759,15 +1078,17 @@ mod tests {
         let diff = r#"diff --git a/a.rs b/a.rs
 --- a/a.rs
 +++ b/a.rs
+@@ -0,0 +1 @@
 +added line
 diff --git a/b.rs b/b.rs
 --- a/b.rs
 +++ b/b.rs
+@@ -1 +0,0 @@
 -removed line
 "#;
         let result = condense_unified_diff(diff);
-        assert!(result.contains("a.rs"));
-        assert!(result.contains("b.rs"));
+        assert!(result.contains("[file] a.rs (+1 -0)"));
+        assert!(result.contains("[file] b.rs (+0 -1)"));
     }
 
     #[test]
@@ -788,9 +1109,6 @@ diff --git a/b.rs b/b.rs
                 result
             );
         }
-        // Scoped to change lines: the `  ... +N more` trailer is legitimately
-        // indented, so a blanket "no line starts with a space" would be false
-        // for any diff with more than ten changes.
         assert!(
             !result
                 .lines()
@@ -813,7 +1131,7 @@ diff --git a/b.rs b/b.rs
             "diff --git a/config.yaml b/config.yaml".to_string(),
             "--- a/config.yaml".to_string(),
             "+++ b/config.yaml".to_string(),
-            "@@ -1,200 +1,200 @@".to_string(),
+            format!("@@ -1,{} +1,{} @@", removed, added),
         ];
         for i in 0..removed {
             lines.push(format!("-old_value_{}", i));
@@ -825,33 +1143,452 @@ diff --git a/b.rs b/b.rs
     }
 
     #[test]
-    fn test_condense_unified_diff_overflow_count_accuracy() {
-        // 100 added + 100 removed = 200 total changes, only 10 shown
-        // True overflow = 200 - 10 = 190
-        // Bug: changes vec capped at 15, so old code showed "+5 more" (15-10) instead of "+190 more"
+    fn test_condense_unified_diff_never_claims_truncation() {
+        // The filter never truncates content, so the old "  ... +N more"
+        // trailer was a lie: it claimed 190 lines were elided while all 200
+        // were printed right above it. Every change line must be present and
+        // no truncation claim made.
         let diff = make_large_unified_diff(100, 100);
         let result = condense_unified_diff(&diff);
         assert!(
-            result.contains("+190 more"),
-            "Expected '+190 more' but got:\n{}",
+            !result.contains("more"),
+            "trailer claims truncation that never happens:\n{}",
             result
         );
+        assert!(result.contains("(+100 -100)"), "got:\n{}", result);
+        for want in ["-old_value_0", "-old_value_99", "+new_value_0", "+new_value_99"] {
+            assert!(
+                result.lines().any(|l| l == want),
+                "missing {want:?} in:\n{}",
+                result
+            );
+        }
+    }
+
+    // --- region parser: real-producer fixture corpus ---
+    //
+    // Every fixture is captured from a real binary (git 2.54 / GNU diff),
+    // never synthesized — synthetic fixtures with impossible hunk counts
+    // masked bugs for five review rounds (claudedocs/
+    // diff-classifier-review-2026-08-29.md). svn is not installed on the
+    // capture machine, so an `Index:`-style fixture is a known corpus gap;
+    // svn's `--- f (revision N)` / `+++ f (working copy)` headers ride the
+    // generic header-pair rule.
+
+    const CORPUS: &[(&str, &str)] = &[
+        (
+            "git_diff_multifile",
+            include_str!("../../../tests/fixtures/diff/git_diff_multifile_raw.txt"),
+        ),
+        (
+            "git_diff_u0",
+            include_str!("../../../tests/fixtures/diff/git_diff_u0_raw.txt"),
+        ),
+        (
+            "git_diff_function_context",
+            include_str!("../../../tests/fixtures/diff/git_diff_function_context_raw.txt"),
+        ),
+        (
+            "git_diff_rename_delete_binary",
+            include_str!("../../../tests/fixtures/diff/git_diff_rename_delete_binary_raw.txt"),
+        ),
+        (
+            "git_log_p",
+            include_str!("../../../tests/fixtures/diff/git_log_p_raw.txt"),
+        ),
+        (
+            "git_show_cc",
+            include_str!("../../../tests/fixtures/diff/git_show_cc_raw.txt"),
+        ),
+        (
+            "git_format_patch_single",
+            include_str!("../../../tests/fixtures/diff/git_format_patch_single_raw.txt"),
+        ),
+        (
+            "git_format_patch_series",
+            include_str!("../../../tests/fixtures/diff/git_format_patch_series_raw.txt"),
+        ),
+        (
+            "git_format_patch_cover",
+            include_str!("../../../tests/fixtures/diff/git_format_patch_cover_raw.txt"),
+        ),
+        (
+            "diff_u",
+            include_str!("../../../tests/fixtures/diff/diff_u_raw.txt"),
+        ),
+        (
+            "diff_ru",
+            include_str!("../../../tests/fixtures/diff/diff_ru_raw.txt"),
+        ),
+        (
+            "diff_rn",
+            include_str!("../../../tests/fixtures/diff/diff_rn_raw.txt"),
+        ),
+        (
+            "diff_u_crlf",
+            include_str!("../../../tests/fixtures/diff/diff_u_crlf_raw.txt"),
+        ),
+    ];
+
+    /// Property (c): the raw-passthrough safety net fires on ZERO corpus
+    /// fixtures — every real producer parses strictly.
+    #[test]
+    fn corpus_never_falls_back_to_raw() {
+        for (name, fixture) in CORPUS {
+            assert!(
+                condense_unified_diff_strict(fixture).is_some(),
+                "{name}: strict parse fell back to raw"
+            );
+        }
+    }
+
+    /// Property (a): every `+`/`-` hunk-body line in the input survives to
+    /// the output verbatim, at column 0.
+    ///
+    /// Body lines are extracted here by replaying only the hunk budgets — an
+    /// independent (and deliberately dumber) walk than the parser under test:
+    /// it knows nothing about prose, headers, or file sections beyond "a
+    /// budget opened at `@@`".
+    #[test]
+    fn corpus_every_marked_body_line_survives() {
+        for (name, fixture) in CORPUS {
+            let out = condense_unified_diff(fixture);
+            let out_lines: std::collections::HashMap<&str, usize> =
+                out.split('\n').fold(std::collections::HashMap::new(), |mut m, l| {
+                    *m.entry(l).or_default() += 1;
+                    m
+                });
+            let mut expected: std::collections::HashMap<&str, usize> =
+                std::collections::HashMap::new();
+            let mut budget: Option<(Vec<usize>, usize)> = None;
+            for raw in fixture.split('\n') {
+                let line = raw.strip_suffix('\r').unwrap_or(raw);
+                if let Some((old, new)) = budget.as_mut() {
+                    if line.starts_with('\\') {
+                        continue;
+                    }
+                    let parents = old.len();
+                    let mut prefix: Vec<char> = line.chars().take(parents).collect();
+                    while prefix.len() < parents {
+                        prefix.push(' ');
+                    }
+                    let in_result = !prefix.contains(&'-');
+                    for (k, left) in old.iter_mut().enumerate() {
+                        if prefix[k] == '-' || (prefix[k] == ' ' && in_result) {
+                            *left -= 1;
+                        }
+                    }
+                    if in_result {
+                        *new -= 1;
+                    }
+                    if prefix.contains(&'-') || prefix.contains(&'+') {
+                        *expected.entry(raw).or_default() += 1;
+                    }
+                    if *new == 0 && old.iter().all(|&n| n == 0) {
+                        budget = None;
+                    }
+                    continue;
+                }
+                if line.starts_with("@@") {
+                    if let Some(b) = parse_hunk_header(line) {
+                        if !(b.1 == 0 && b.0.iter().all(|&n| n == 0)) {
+                            budget = Some(b);
+                        }
+                    }
+                }
+            }
+            assert!(
+                !expected.is_empty(),
+                "{name}: replay found no body lines — fixture or replay broken"
+            );
+            for (body, count) in expected {
+                assert!(
+                    out_lines.get(body).copied().unwrap_or(0) >= count,
+                    "{name}: body line {body:?} (x{count}) missing from output:\n{out}"
+                );
+            }
+        }
+    }
+
+    /// Property (b): each `[file]` counter equals the number of marked lines
+    /// rendered under it.
+    #[test]
+    fn corpus_counters_equal_rendered_lines() {
+        for (name, fixture) in CORPUS {
+            let out = condense_unified_diff(fixture);
+            let mut counts: Option<(usize, usize)> = None;
+            let (mut added, mut removed) = (0usize, 0usize);
+            let check = |counts: Option<(usize, usize)>, added, removed| {
+                if let Some((a, r)) = counts {
+                    assert_eq!(
+                        (a, r),
+                        (added, removed),
+                        "{name}: counter/content mismatch in:\n{out}"
+                    );
+                }
+            };
+            for line in out.split('\n') {
+                if line.starts_with("[file] ") {
+                    check(counts, added, removed);
+                    counts = line
+                        .rfind("(+")
+                        .and_then(|p| line[p + 2..].strip_suffix(')'))
+                        .and_then(|c| c.split_once(" -"))
+                        .and_then(|(a, r)| Some((a.parse().ok()?, r.parse().ok()?)));
+                    (added, removed) = (0, 0);
+                } else if line.starts_with('+') {
+                    added += 1;
+                } else if line.starts_with('-') {
+                    removed += 1;
+                } else {
+                    // combined-diff lines may carry a leading space column
+                    if line.trim_start_matches(' ').starts_with('-') {
+                        removed += 1;
+                    } else if line.trim_start_matches(' ').starts_with('+') {
+                        added += 1;
+                    }
+                }
+            }
+            check(counts, added, removed);
+        }
+    }
+
+    // --- region parser: the reproducers from the design brief ---
+
+    #[test]
+    fn sql_comment_removals_survive_and_are_counted() {
+        // Reproducer 1: a removed line whose content starts `-- ` is `--- `
+        // on the wire; the old prefix classifier read it as a file header and
+        // dropped it.
+        let fixture = include_str!("../../../tests/fixtures/diff/git_diff_multifile_raw.txt");
+        let out = condense_unified_diff(fixture);
+        for want in ["--- users table", "--- created 2024", "-  -- legacy column"] {
+            assert!(
+                out.lines().any(|l| l == want),
+                "missing {want:?} in:\n{out}"
+            );
+        }
         assert!(
-            !result.contains("+5 more"),
-            "Bug still present: showing '+5 more' instead of true overflow"
+            out.contains("[file] schema.sql (+0 -3)"),
+            "schema.sql counter under-reports:\n{out}"
         );
     }
 
     #[test]
-    fn test_condense_unified_diff_no_false_overflow() {
-        // 8 changes total — all fit within the 10-line display cap, no overflow message
-        let diff = make_large_unified_diff(4, 4);
-        let result = condense_unified_diff(&diff);
+    fn plus_plus_content_line_is_not_a_file_header() {
+        // Reproducer 2: an added line whose content starts `++` is `+++ ` on
+        // the wire; the old classifier renamed the [file] label to it and
+        // lost the line.
+        let fixture = include_str!("../../../tests/fixtures/diff/git_diff_multifile_raw.txt");
+        let out = condense_unified_diff(fixture);
         assert!(
-            !result.contains("more"),
-            "No overflow message expected for 8 changes, got:\n{}",
-            result
+            out.lines().any(|l| l == "+++ can also start a line"),
+            "added ++ line lost:\n{out}"
         );
+        assert!(
+            out.contains("[file] notes.md (+1 -0)"),
+            "notes.md label corrupted:\n{out}"
+        );
+        assert!(
+            !out.contains("[file] + can also start a line"),
+            "file label renamed to user content:\n{out}"
+        );
+    }
+
+    #[test]
+    fn format_patch_signature_and_prose_are_not_counted() {
+        // Reproducer 3 + the round-5 lesson: the `-- ` signature is not a
+        // removal, and unindented `- ` commit-message bullets (mbox prose)
+        // neither count nor trigger the fallback.
+        let fixture =
+            include_str!("../../../tests/fixtures/diff/git_format_patch_single_raw.txt");
+        let out = condense_unified_diff(fixture);
+        assert_ne!(out, fixture, "format-patch fell back to raw");
+        assert!(!out.contains("-- \n"), "signature counted as content:\n{out}");
+        assert!(
+            !out.contains("- remove the"),
+            "mbox prose bullet leaked into output:\n{out}"
+        );
+        assert!(out.contains("[file] schema.sql (+0 -3)"), "got:\n{out}");
+    }
+
+    #[test]
+    fn deletion_names_the_deleted_file_not_dev_null() {
+        // Reproducer 7: `+++ /dev/null` must not become the display name.
+        let fixture =
+            include_str!("../../../tests/fixtures/diff/git_diff_rename_delete_binary_raw.txt");
+        let out = condense_unified_diff(fixture);
+        assert!(
+            out.contains("[file] doomed.txt (+0 -3)"),
+            "deletion misnamed:\n{out}"
+        );
+        assert!(!out.contains("/dev/null"), "got:\n{out}");
+    }
+
+    #[test]
+    fn binary_and_rename_only_files_are_reported() {
+        // Reproducer 8: binary and rename-only sections used to vanish.
+        let fixture =
+            include_str!("../../../tests/fixtures/diff/git_diff_rename_delete_binary_raw.txt");
+        let out = condense_unified_diff(fixture);
+        assert!(out.contains("[file] blob.bin (binary)"), "got:\n{out}");
+        assert!(
+            out.contains("[file] renamed_dst.txt (renamed from renamed_src.txt)"),
+            "got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn combined_diff_hunks_parse_with_two_parents() {
+        let fixture = include_str!("../../../tests/fixtures/diff/git_show_cc_raw.txt");
+        let out = condense_unified_diff(fixture);
+        assert_ne!(out, fixture, "combined diff fell back to raw");
+        for want in [
+            "- conflict line MAIN",
+            " -conflict line LEFT",
+            "++conflict line RESOLVED",
+        ] {
+            assert!(
+                out.lines().any(|l| l == want),
+                "missing {want:?} in:\n{out}"
+            );
+        }
+        assert!(out.contains("[file] cfile.txt (+1 -2)"), "got:\n{out}");
+    }
+
+    #[test]
+    fn crlf_content_bytes_survive_verbatim() {
+        // Reproducer 11: `lines()` stripped the `\r`, so a CRLF-only change
+        // rendered as two identical lines. Content is now byte-faithful.
+        let fixture = include_str!("../../../tests/fixtures/diff/diff_u_crlf_raw.txt");
+        let out = condense_unified_diff(fixture);
+        assert!(
+            out.split('\n').any(|l| l == "-change me\r"),
+            "CR byte lost from removed line:\n{out:?}"
+        );
+        assert!(
+            out.split('\n').any(|l| l == "+change me now\r"),
+            "CR byte lost from added line:\n{out:?}"
+        );
+    }
+
+    #[test]
+    fn plain_diff_u_timestamps_do_not_pollute_the_name() {
+        // Reproducer 12 (second half): `diff -u` appends `\t<timestamp>` to
+        // the header names.
+        let fixture = include_str!("../../../tests/fixtures/diff/diff_u_raw.txt");
+        let out = condense_unified_diff(fixture);
+        let label = out.lines().next().unwrap_or("");
+        assert!(
+            label.starts_with("[file] ") && !label.contains("2026-"),
+            "timestamp leaked into name: {label}"
+        );
+    }
+
+    #[test]
+    fn b_prefix_is_stripped_exactly_once() {
+        // Reproducer 12 (first half): `trim_start_matches("b/")` stripped
+        // repeatedly, so `b/b/x.rs` (a file in a literal `b/` directory)
+        // became `x.rs`.
+        let diff = "diff --git a/b/x.rs b/b/x.rs\n--- a/b/x.rs\n+++ b/b/x.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let out = condense_unified_diff(diff);
+        assert!(out.contains("[file] b/x.rs (+1 -1)"), "got:\n{out}");
+    }
+
+    #[test]
+    fn u0_and_omitted_counts_parse() {
+        // `-U0` produces `@@ -3 +3 @@` (omitted count = 1) and zero-count
+        // ranges like `@@ -5,0 +6 @@`.
+        let fixture = include_str!("../../../tests/fixtures/diff/git_diff_u0_raw.txt");
+        let out = condense_unified_diff(fixture);
+        assert_ne!(out, fixture, "-U0 fell back to raw");
+        assert!(out.contains("[file] main.rs (+2 -1)"), "got:\n{out}");
+    }
+
+    // --- region parser: the safety net must fire on structural disagreement ---
+
+    #[test]
+    fn truncated_hunk_falls_back_to_raw() {
+        // Reproducer 5 (budget owed at EOF): a stream cut mid-hunk must pass
+        // through raw, not render a partial hunk as complete.
+        let fixture = include_str!("../../../tests/fixtures/diff/git_diff_multifile_raw.txt");
+        let cut: String = fixture
+            .split('\n')
+            .take(7) // ends inside the first hunk
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            condense_unified_diff_strict(&cut).is_none(),
+            "truncated hunk did not fall back"
+        );
+        assert_eq!(condense_unified_diff(&cut), cut);
+    }
+
+    #[test]
+    fn understated_budget_falls_back_to_raw() {
+        // Reproducer 5 (stale count, under-declared): leftover marked lines
+        // after the budget closes are content outside any hunk.
+        let diff = "--- a/f\n+++ b/f\n@@ -1,1 +1,1 @@\n-old\n+new\n+leftover the budget missed\n";
+        assert!(condense_unified_diff_strict(diff).is_none());
+        assert_eq!(condense_unified_diff(diff), diff);
+    }
+
+    #[test]
+    fn overstated_budget_falls_back_to_raw() {
+        // Reproducer 5 (stale count, over-declared): the budget still owes
+        // lines when the next file header arrives; the header's `d` fails the
+        // body-prefix check.
+        let diff = "--- a/f\n+++ b/f\n@@ -1,3 +1,3 @@\n-old\n+new\ndiff --git a/g b/g\n--- a/g\n+++ b/g\n@@ -1 +1 @@\n-x\n+y\n";
+        assert!(condense_unified_diff_strict(diff).is_none());
+    }
+
+    #[test]
+    fn malformed_hunk_header_falls_back_to_raw() {
+        let diff = "--- a/f\n+++ b/f\n@@ garbage @@\n-old\n+new\n";
+        assert!(condense_unified_diff_strict(diff).is_none());
+    }
+
+    #[test]
+    fn non_diff_input_passes_through() {
+        // `--color` streams, --stat output, plain text: nothing recognizable
+        // means raw passthrough, never a silently empty result.
+        let ansi = "\u{1b}[1mbold header\u{1b}[m\nplain text\n";
+        assert_eq!(condense_unified_diff(ansi), ansi);
+        let stat = " main.rs | 3 ++-\n 1 file changed, 2 insertions(+), 1 deletion(-)\n";
+        assert_eq!(condense_unified_diff(stat), stat);
+    }
+
+    #[test]
+    fn empty_zero_zero_hunk_closes_immediately() {
+        // Reproducer 6: `@@ -0,0 +0,0 @@` owes nothing; the next line belongs
+        // to the following region.
+        let diff = "--- a/f\n+++ b/f\n@@ -0,0 +0,0 @@\ndiff --git a/g b/g\n--- a/g\n+++ b/g\n@@ -1 +1 @@\n-x\n+y\n";
+        let out = condense_unified_diff(diff);
+        assert!(out.contains("[file] g (+1 -1)"), "got:\n{out}");
+    }
+
+    // --- token accounting (fidelity filter: content kept, metadata dropped) ---
+
+    fn count_tokens(s: &str) -> usize {
+        s.split_whitespace().count()
+    }
+
+    #[test]
+    fn condensed_output_is_never_larger_than_input() {
+        // This filter is a fidelity filter: it keeps every content line by
+        // design, so its savings come only from dropped metadata (~9% on real
+        // git output, measured on this corpus). The 60% floor in
+        // cli-testing.md is written for truncating filters and does not apply
+        // — see the fidelity-filter exemption discussion on the ticket. What
+        // must always hold: the output is never larger than the input (the
+        // `never_worse` guard's contract, verified here at the filter level).
+        for (name, fixture) in CORPUS {
+            let out = condense_unified_diff(fixture);
+            assert!(
+                count_tokens(&out) <= count_tokens(fixture),
+                "{name}: output grew"
+            );
+        }
     }
 
     #[test]
