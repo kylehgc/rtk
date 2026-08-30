@@ -127,22 +127,26 @@ pub fn run_stdin(_verbose: u8) -> Result<()> {
     let timer = tracking::TimedExecution::start();
 
     // Bytes, not String: piped diffs are not guaranteed UTF-8 (patches quote
-    // the target file's bytes), and a hard error here loses the user's output.
+    // the target file's bytes). Non-UTF-8 input takes the raw-bytes branch
+    // below — never a hard error, and never a lossy re-encode of content.
     let mut bytes = Vec::new();
     io::stdin()
         .read_to_end(&mut bytes)
         .context("Failed to read diff from stdin")?;
-    // One decode for the whole call: borrows when the stream is valid UTF-8.
-    let input = String::from_utf8_lossy(&bytes);
 
-    match condense_stdin(&input) {
+    match condense_stdin(&bytes) {
         Some(condensed) => {
             println!("{}", condensed);
-            timer.track("diff (stdin)", "rtk diff (stdin)", &input, &condensed);
+            timer.track(
+                "diff (stdin)",
+                "rtk diff (stdin)",
+                &String::from_utf8_lossy(&bytes),
+                &condensed,
+            );
         }
         None => {
-            // Structural fallback: the caller's exact bytes, unmodified — a
-            // lossy UTF-8 decode or ANSI-stripped "raw" is not raw.
+            // Structural fallback: the caller's exact bytes (plus println!
+            // parity — a terminating newline when the input lacked one).
             use std::io::Write;
             let mut out = io::stdout();
             out.write_all(&bytes)
@@ -150,7 +154,8 @@ pub fn run_stdin(_verbose: u8) -> Result<()> {
             if !bytes.is_empty() && !bytes.ends_with(b"\n") {
                 writeln!(out).context("Failed to write raw diff to stdout")?;
             }
-            timer.track("diff (stdin)", "rtk diff (stdin)", &input, &input);
+            let raw = String::from_utf8_lossy(&bytes);
+            timer.track("diff (stdin)", "rtk diff (stdin)", &raw, &raw);
         }
     }
 
@@ -160,8 +165,10 @@ pub fn run_stdin(_verbose: u8) -> Result<()> {
 /// Filter a piped stream: strip ANSI (a `git diff --color` stream otherwise
 /// matches nothing and condenses to silence), parse strictly, and apply the
 /// never-worse guard. `None` means the caller must emit its exact input
-/// bytes.
-fn condense_stdin(input: &str) -> Option<String> {
+/// bytes — including for non-UTF-8 input, where filtering would rewrite the
+/// user's content bytes to U+FFFD (byte fidelity outranks savings here).
+fn condense_stdin(bytes: &[u8]) -> Option<String> {
+    let input = std::str::from_utf8(bytes).ok()?;
     let cleaned = crate::core::utils::strip_ansi(input);
     let condensed = condense_unified_diff_strict(&cleaned)?;
     // The never_worse contract: when filtering would not shrink the stream,
@@ -508,14 +515,20 @@ fn parse_hunk_header(line: &str) -> Option<(Vec<usize>, usize)> {
 ///    prefix, a budget over-consumed by one more body line, or EOF with
 ///    budget still owed → `None`. (Hunks close the moment the budget hits
 ///    zero, so a `@@` or file header arriving while a hunk is open is itself
-///    budget-owed → the invalid-prefix arm returns `None`.)
+///    budget-owed → the invalid-prefix arm returns `None`.) The
+///    `\ No newline at end of file` marker consumes no budget but is kept as
+///    content — in-hunk (old side) or immediately after the budget closes
+///    (new side) — because it is the only witness of a newline-only change.
 /// 2. An mbox `From <sha>` separator resets to the prose prologue.
 /// 3. `diff --git` / `diff --cc` opens a file section (git extended headers
 ///    such as `rename`/`Binary files`/mode lines annotate it).
 /// 4. A `--- X` line immediately followed by `+++ Y` is a file header: it
 ///    renames a still-hunkless section in place, or opens a new one. This is
 ///    what ends the prose prologue — the prologue is positional (everything
-///    before the first file header), never keyed on line values.
+///    before the first file header), never keyed on line values. (Bound:
+///    mbox prose quoting an unindented header pair ends its message region
+///    early and can fabricate a phantom entry; any budget disagreement in
+///    what follows still falls back raw, so the cost is noise, not loss.)
 /// 5. `@@` after a file header opens a hunk; a malformed `@@` line there is
 ///    `None`. Before any file section (a hunk quoted in commit prose) it
 ///    stays prose.
@@ -577,7 +590,12 @@ fn condense_unified_diff_strict(diff: &str) -> Option<String> {
         // Rule 1: the open hunk's budget owns the line.
         if let Some(h) = hunk.as_mut() {
             if line.starts_with('\\') {
-                // "\ No newline at end of file": hunk metadata, no budget.
+                // "\ No newline at end of file": consumes no budget, but the
+                // fact must survive — without it a trailing-newline-only
+                // change renders as two byte-identical -/+ lines.
+                if let Some(e) = current.as_mut() {
+                    e.changes.push(raw.to_string());
+                }
                 continue;
             }
             let parents = h.old_left.len();
@@ -616,6 +634,15 @@ fn condense_unified_diff_strict(diff: &str) -> Option<String> {
             }
             if h.exhausted() {
                 hunk = None;
+            }
+            continue;
+        }
+
+        // Rule 1b: the new-side no-newline marker lands right after its
+        // hunk's budget closed; it still belongs to that hunk's section.
+        if line.starts_with('\\') {
+            if let Some(e) = current.as_mut().filter(|e| e.saw_hunk) {
+                e.changes.push(raw.to_string());
             }
             continue;
         }
@@ -1355,6 +1382,10 @@ diff --git a/b.rs b/b.rs
             "git_format_patch_sha256",
             include_str!("../../../tests/fixtures/diff/git_format_patch_sha256_raw.txt"),
         ),
+        (
+            "git_diff_no_eol",
+            include_str!("../../../tests/fixtures/diff/git_diff_no_eol_raw.txt"),
+        ),
     ];
 
     /// Property (c): the raw-passthrough safety net fires on ZERO corpus
@@ -1689,7 +1720,7 @@ diff --git a/b.rs b/b.rs
         // Reproducer 9: `git diff --color` through a pipe used to condense to
         // a silently empty result.
         let colored = "\u{1b}[1mdiff --git a/x b/x\u{1b}[m\n\u{1b}[1m--- a/x\u{1b}[m\n\u{1b}[1m+++ b/x\u{1b}[m\n\u{1b}[36m@@ -1 +1 @@\u{1b}[m\n\u{1b}[31m-old_line_content\u{1b}[m\n\u{1b}[32m+new_line_content\u{1b}[m\n";
-        let out = condense_stdin(colored).expect("colored diff must parse");
+        let out = condense_stdin(colored.as_bytes()).expect("colored diff must parse");
         assert!(out.contains("[file] x (+1 -1)"), "got:\n{out}");
         assert!(out.lines().any(|l| l == "-old_line_content"));
     }
@@ -1700,19 +1731,18 @@ diff --git a/b.rs b/b.rs
         // stream is not a diff, the fallback must signal "emit the exact
         // bytes" — a lossy re-encode of unparsed input would corrupt it.
         let bytes = b"not a diff at all \xff\xfe just text\n";
-        assert!(condense_stdin(&String::from_utf8_lossy(bytes)).is_none());
+        assert!(condense_stdin(bytes).is_none());
     }
 
     #[test]
-    fn stdin_non_utf8_diff_content_filters_lossily() {
-        // When the stream IS a parseable diff, non-UTF-8 content bytes are
-        // shown with U+FFFD rather than aborting the whole filter.
+    fn stdin_non_utf8_diff_takes_the_raw_bytes_path() {
+        // Even a parseable diff falls back when its content bytes are not
+        // UTF-8: condensing would rewrite the user's bytes to U+FFFD, and
+        // byte fidelity outranks savings. (The base code hard-errored here;
+        // raw passthrough is strictly better on both counts.)
         let bytes: &[u8] =
             b"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-caf\xe9 old\n+caf\xe9 new\n";
-        let out = condense_stdin(&String::from_utf8_lossy(bytes))
-            .expect("diff with latin-1 content must parse");
-        assert!(out.contains('\u{FFFD}'), "got:\n{out}");
-        assert!(out.contains("[file] x (+1 -1)"), "got:\n{out}");
+        assert!(condense_stdin(bytes).is_none());
     }
 
     #[test]
@@ -1744,6 +1774,21 @@ diff --git a/b.rs b/b.rs
             );
         }
         assert!(out.contains("[file] cfile.txt (+1 -2)"), "got:\n{out}");
+    }
+
+    #[test]
+    fn no_newline_marker_survives_to_the_output() {
+        // A trailing-newline-only change is `-content` / `+content` plus
+        // `\ No newline at end of file`; dropping the marker leaves two
+        // byte-identical lines and no witness of the actual difference.
+        let fixture = include_str!("../../../tests/fixtures/diff/git_diff_no_eol_raw.txt");
+        let out = condense_unified_diff(fixture);
+        assert_ne!(out, fixture, "no-eol diff fell back to raw");
+        assert!(
+            out.lines().any(|l| l == "\\ No newline at end of file"),
+            "no-newline marker lost:\n{out}"
+        );
+        assert!(out.contains("[file] eol.txt (+1 -1)"), "got:\n{out}");
     }
 
     #[test]
