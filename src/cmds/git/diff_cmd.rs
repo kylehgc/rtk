@@ -171,10 +171,10 @@ fn condense_stdin(bytes: &[u8]) -> Option<String> {
     let input = std::str::from_utf8(bytes).ok()?;
     let cleaned = crate::core::utils::strip_ansi(input);
     let condensed = condense_unified_diff_strict(&cleaned)?;
-    // The never_worse contract: when filtering would not shrink the stream,
-    // the caller's exact bytes win.
+    // The never_worse contract, against what the user would otherwise get —
+    // the original input, not the ANSI-stripped intermediate.
     if crate::core::tracking::estimate_tokens(&condensed)
-        <= crate::core::tracking::estimate_tokens(&cleaned)
+        <= crate::core::tracking::estimate_tokens(input)
     {
         Some(condensed)
     } else {
@@ -523,12 +523,15 @@ fn parse_hunk_header(line: &str) -> Option<(Vec<usize>, usize)> {
 /// 3. `diff --git` / `diff --cc` opens a file section (git extended headers
 ///    such as `rename`/`Binary files`/mode lines annotate it).
 /// 4. A `--- X` line immediately followed by `+++ Y` is a file header: it
-///    renames a still-hunkless section in place, or opens a new one. This is
-///    what ends the prose prologue — the prologue is positional (everything
-///    before the first file header), never keyed on line values. (Bound:
-///    mbox prose quoting an unindented header pair ends its message region
-///    early and can fabricate a phantom entry; any budget disagreement in
-///    what follows still falls back raw, so the cost is noise, not loss.)
+///    renames a still-hunkless section in place, or — when the line after
+///    `+++ Y` opens a hunk, as every real producer's does — opens a new
+///    section. A pair with no hunk behind it is not consumed: it falls to
+///    rules 7-9, so stray marked lines are never swallowed as a phantom
+///    header. This is what ends the prose prologue — the prologue is
+///    positional (everything before the first file header), never keyed on
+///    line values. (Bound: mbox prose quoting an unindented, well-formed
+///    header-plus-hunk block still fabricates a phantom entry — noise, not
+///    loss, since any budget disagreement in it falls back raw.)
 /// 5. `@@` after a file header opens a hunk; a malformed `@@` line there is
 ///    `None`. Before any file section (a hunk quoted in commit prose) it
 ///    stays prose.
@@ -728,20 +731,34 @@ fn condense_unified_diff_strict(diff: &str) -> Option<String> {
                 .and_then(|n| n.strip_prefix("+++ "));
             if let Some(plus) = next {
                 let name = header_name(minus, plus);
-                match current.as_mut().filter(|e| e.header_only()) {
-                    Some(e) => e.name = name,
-                    None => {
-                        flush(&mut entries, &mut current);
-                        current = Some(FileEntry {
-                            name,
-                            ..FileEntry::default()
-                        });
+                // A pair opening a NEW section must be followed by a hunk
+                // header — every real producer emits one. Without this gate
+                // a stray marked pair (a lying budget's leftovers) would be
+                // consumed as a phantom header and its two lines lost;
+                // gated, it falls through to rule 8 instead. An open git
+                // section (extended headers already seen) needs no gate.
+                let opens_hunk = lines
+                    .get(i + 1)
+                    .map(|r| r.strip_suffix('\r').unwrap_or(r))
+                    .is_some_and(|n| n.starts_with("@@"));
+                let renames_in_place =
+                    current.as_ref().is_some_and(|e| e.header_only());
+                if renames_in_place || opens_hunk {
+                    match current.as_mut().filter(|e| e.header_only()) {
+                        Some(e) => e.name = name,
+                        None => {
+                            flush(&mut entries, &mut current);
+                            current = Some(FileEntry {
+                                name,
+                                ..FileEntry::default()
+                            });
+                        }
                     }
+                    in_prologue = false;
+                    in_mbox_message = false;
+                    i += 1; // consume the `+++` line too
+                    continue;
                 }
-                in_prologue = false;
-                in_mbox_message = false;
-                i += 1; // consume the `+++` line too
-                continue;
             }
         }
 
@@ -1388,11 +1405,33 @@ diff --git a/b.rs b/b.rs
         ),
     ];
 
+    /// Fixtures whose sections carry no hunks (notes only) — excluded from
+    /// the body-line survival replay, which asserts it finds body lines, but
+    /// still bound by the no-fallback and never-larger properties.
+    const HUNKLESS_CORPUS: &[(&str, &str)] = &[
+        (
+            "git_diff_copy",
+            include_str!("../../../tests/fixtures/diff/git_diff_copy_raw.txt"),
+        ),
+        (
+            "git_diff_mode",
+            include_str!("../../../tests/fixtures/diff/git_diff_mode_raw.txt"),
+        ),
+        (
+            "git_diff_submodule",
+            include_str!("../../../tests/fixtures/diff/git_diff_submodule_raw.txt"),
+        ),
+        (
+            "git_diff_empty_new_deleted",
+            include_str!("../../../tests/fixtures/diff/git_diff_empty_new_deleted_raw.txt"),
+        ),
+    ];
+
     /// Property (c): the raw-passthrough safety net fires on ZERO corpus
     /// fixtures — every real producer parses strictly.
     #[test]
     fn corpus_never_falls_back_to_raw() {
-        for (name, fixture) in CORPUS {
+        for (name, fixture) in CORPUS.iter().chain(HUNKLESS_CORPUS) {
             assert!(
                 condense_unified_diff_strict(fixture).is_some(),
                 "{name}: strict parse fell back to raw"
@@ -1696,6 +1735,17 @@ diff --git a/b.rs b/b.rs
     }
 
     #[test]
+    fn stray_header_pair_without_a_hunk_falls_back_to_raw() {
+        // A lying budget can leave `--- x` / `+++ y` leftovers outside any
+        // hunk; consuming them as a phantom file header would silently lose
+        // both lines. A pair not followed by `@@` is not a header.
+        let diff =
+            "--- a/f\n+++ b/f\n@@ -1 +1 @@\n-old\n+new\n--- stray removed\n+++ stray added\n";
+        assert!(condense_unified_diff_strict(diff).is_none());
+        assert_eq!(condense_unified_diff(diff), diff);
+    }
+
+    #[test]
     fn signature_tolerance_requires_an_mbox_stream() {
         // A bare `--` leftover in a plain (non-mbox) stream is stale-budget
         // evidence, not a signature; only format-patch streams (which always
@@ -1919,8 +1969,10 @@ diff --git a/b.rs b/b.rs
         // fidelity-filter exemption is escalated on the ticket as a
         // maintainer decision. What must always hold: the output is never
         // larger than the input (the `never_worse` guard's contract,
-        // verified here at the filter level).
-        for (name, fixture) in CORPUS {
+        // verified here at the filter level). Percentages above are by this
+        // test's whitespace-token metric; the runtime guard uses
+        // `estimate_tokens` (bytes/4), which shifts individual numbers.
+        for (name, fixture) in CORPUS.iter().chain(HUNKLESS_CORPUS) {
             let out = condense_unified_diff(fixture);
             assert!(
                 count_tokens(&out) <= count_tokens(fixture),
