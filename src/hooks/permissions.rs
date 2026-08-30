@@ -410,15 +410,41 @@ pub(crate) fn normalize_for_matching(segment: &str) -> &str {
     }
 }
 
-/// RTK subcommands whose trailing arguments are themselves the executed
-/// command: `rtk proxy <cmd>` runs `<cmd>` raw; `rtk err <cmd>`,
-/// `rtk test <cmd>`, and `rtk summary <cmd>` run `<cmd>` and filter its
-/// output. For permission matching the effective command is the wrapped
-/// one, so a `Bash(rm:*)` deny must see through `rtk proxy rm -rf /`.
-/// This list is exhaustive over `main.rs`'s `Commands` enum: every other
-/// variant either proxies the tool it is named after (`rtk grep …` IS
-/// `grep …`) or never executes its argument (`rtk check`, `rtk rewrite`).
-const COMMAND_WRAPPERS: [&str; 4] = ["proxy", "err", "test", "summary"];
+/// RTK subcommands whose arguments are themselves the executed command:
+/// `rtk proxy <cmd>` runs `<cmd>` raw, `rtk run …` shells out its string
+/// via `sh -c`, and `rtk err/test/summary <cmd>` run `<cmd>` and filter
+/// its output. For permission matching the effective command is the
+/// wrapped one, so deny/ask rules are matched against the stripped form —
+/// best-effort only: matching is token-literal, and quoted or string-form
+/// arguments (`rtk run -c "rm -rf /"`, `rtk proxy "rm" -rf /`) may not
+/// match. That is why wrapped invocations are also excluded from the
+/// hook's assert gates via [`is_wrapped_invocation`]: over-firing a deny
+/// is fail-safe, asserting an allow for text RTK cannot decompose is not.
+/// This list is exhaustive over `main.rs`'s top-level `Commands` enum:
+/// every other variant either proxies the tool it is named after
+/// (`rtk grep …` IS `grep …`) or never executes its argument
+/// (`rtk rewrite`, `rtk hook check`).
+const COMMAND_WRAPPERS: [&str; 5] = ["proxy", "run", "err", "test", "summary"];
+
+/// True when `segment` reaches its executed command through one of
+/// [`COMMAND_WRAPPERS`]. Such segments are matched best-effort for
+/// deny/ask rules but must never be allow/ask-ASSERTED by the hook: the
+/// wrapper's argument is arbitrary text RTK cannot fully attest.
+pub(crate) fn is_wrapped_invocation(segment: &str) -> bool {
+    let mut s = segment;
+    loop {
+        let Some(after_rtk) = strip_token(s, "rtk") else {
+            return false;
+        };
+        if COMMAND_WRAPPERS
+            .iter()
+            .any(|wrapper| strip_token(after_rtk, wrapper).is_some())
+        {
+            return true;
+        }
+        s = after_rtk;
+    }
+}
 
 /// Strips `token` from the start of `s` when it is followed by at least
 /// one ASCII IFS whitespace character (space, tab, CR, LF) and more text;
@@ -1316,6 +1342,30 @@ mod tests {
         assert_eq!(normalize_for_matching("proxy rm -rf /"), "proxy rm -rf /");
         assert_eq!(normalize_for_matching("rtk proxyfoo bar"), "proxyfoo bar");
         assert_eq!(normalize_for_matching("rtk proxy"), "proxy");
+    }
+
+    #[test]
+    fn test_is_wrapped_invocation_contract() {
+        assert!(is_wrapped_invocation("rtk proxy rm -rf /"));
+        assert!(is_wrapped_invocation("rtk run -c \"rm -rf /\""));
+        assert!(is_wrapped_invocation("rtk rtk proxy rm"));
+        assert!(is_wrapped_invocation("rtk err cargo build"));
+        assert!(!is_wrapped_invocation("rtk grep foo"));
+        assert!(!is_wrapped_invocation("proxy rm -rf /"));
+        assert!(!is_wrapped_invocation("rtk proxy"));
+        assert!(!is_wrapped_invocation("rm -rf /"));
+        assert!(!is_wrapped_invocation("rtk proxyfoo bar"));
+    }
+
+    #[test]
+    fn test_run_wrapper_deny_rule_fires() {
+        // `rtk run <cmd>` shells out via sh -c — same class as proxy.
+        let deny = vec!["rm:*".to_string()];
+        let allow = vec!["rtk:*".to_string()];
+        assert_eq!(
+            check_command_with_rules("rtk run rm -rf /", &deny, &[], &allow),
+            PermissionVerdict::Deny
+        );
     }
 
     #[test]

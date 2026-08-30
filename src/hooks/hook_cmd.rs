@@ -279,6 +279,15 @@ fn decide_from_verdict(cmd: &str, verdict: PermissionVerdict) -> HookDecision {
         return HookDecision::Deny;
     }
     if crate::discover::lexer::contains_unattestable_construct(cmd) {
+        // RTK can't attest what a substitution / file redirect really does,
+        // so it never asserts allow here. For an already-rtk command a
+        // silent defer would hand the decision to a host-native
+        // `Bash(rtk:*)` allowlist that is blind to the underlying tool —
+        // force the prompt by asserting ask instead. Plain commands keep
+        // the pre-existing silent defer.
+        if contains_already_rtk_segment(cmd) {
+            return HookDecision::AskRewrite(cmd.to_string());
+        }
         return HookDecision::Defer;
     }
     match get_rewritten(cmd) {
@@ -703,7 +712,10 @@ fn contains_already_rtk_segment(cmd: &str) -> bool {
 }
 
 /// True when `cmd` has at least one non-empty segment and every non-empty
-/// segment is rtk-prefixed. See the quantifier note above.
+/// segment is rtk-prefixed AND directly names its tool (not a wrapper like
+/// `rtk proxy`/`rtk run`, whose arbitrary argument text RTK cannot fully
+/// attest — see `permissions::is_wrapped_invocation`). See the quantifier
+/// note above.
 fn all_segments_already_rtk(cmd: &str) -> bool {
     let segments = crate::discover::lexer::split_for_permissions(cmd);
     let mut saw_segment = false;
@@ -712,7 +724,7 @@ fn all_segments_already_rtk(cmd: &str) -> bool {
         if segment.is_empty() {
             continue;
         }
-        if !permissions::is_rtk_prefixed(segment) {
+        if !permissions::is_rtk_prefixed(segment) || permissions::is_wrapped_invocation(segment) {
             return false;
         }
         saw_segment = true;
@@ -1671,7 +1683,24 @@ mod tests {
 
     #[test]
     fn test_claude_already_rtk_passthrough() {
-        assert!(run_claude_inner(&claude_input("rtk git status")).is_none());
+        // No rules → Default verdict → already-rtk command still defers.
+        // Driven through the injected decision path: since #3152 the
+        // outcome depends on permission rules, so reading the real on-disk
+        // settings here would make the test environment-dependent.
+        let input = json!({"tool_name": "Bash", "tool_input": {"command": "rtk git status"}});
+        let action = process_claude_payload_impl(&input, |cmd| {
+            decide_from_verdict(
+                cmd,
+                permissions::check_command_with_rules(cmd, &[], &[], &[]),
+            )
+        });
+        assert!(matches!(
+            action,
+            PayloadAction::Skip {
+                reason: "skip:defer",
+                ..
+            }
+        ));
     }
 
     // --- contains_already_rtk_segment (used by the active-deny path, #3152) ---
@@ -2210,6 +2239,7 @@ mod tests {
         let allow = vec!["rtk:*".to_string()];
         for cmd in [
             "rtk proxy rm -rf /",
+            "rtk run rm -rf /",
             "rtk err rm -rf /",
             "rtk test rm -rf /",
             "rtk summary rm -rf /",
@@ -2226,14 +2256,59 @@ mod tests {
     }
 
     #[test]
+    fn test_wrapped_invocations_never_asserted() {
+        // Wrapper arguments are arbitrary (`rtk run` takes a whole shell
+        // string; quoting defeats token matching in any wrapper), so RTK
+        // must never speak for them: deny stays best-effort, allow/ask
+        // always defer — even under a catch-all allow rule.
+        let allow = vec!["*".to_string()];
+        for cmd in [
+            "rtk run rm -rf /",
+            "rtk run -c \"rm -rf /\"",
+            "rtk run \"rm -rf /\"",
+            "rtk proxy \"rm\" -rf /",
+            "rtk proxy rm -rf /",
+            "rtk err rm -rf /",
+        ] {
+            assert!(
+                matches!(
+                    decide_with_rules(cmd, &[], &[], &allow),
+                    HookDecision::Defer
+                ),
+                "{cmd} must defer, never be asserted"
+            );
+        }
+    }
+
+    #[test]
+    fn test_unattestable_already_rtk_asserts_ask() {
+        // A redirect/substitution on an already-rtk command can't be
+        // attested; silence would let a host-native `Bash(rtk:*)`
+        // allowlist auto-run it, so the ask must be asserted.
+        let allow = vec!["*".to_string()];
+        match decide_with_rules("rtk git log > /tmp/out.txt", &[], &[], &allow) {
+            HookDecision::AskRewrite(r) => assert_eq!(r, "rtk git log > /tmp/out.txt"),
+            other => panic!("expected AskRewrite(cmd unchanged), got {other:?}"),
+        }
+        // The plain (non-rtk) unattestable path keeps its silent defer.
+        assert!(matches!(
+            decide_with_rules("git log > /tmp/out.txt", &[], &[], &allow),
+            HookDecision::Defer
+        ));
+    }
+
+    #[test]
     fn test_probe_shapes_fail_safe() {
         // Shapes that must never reach the already-rtk assert paths: each
         // stays out of the gates so the host's native matcher (or its
         // prompt) remains authoritative.
         let allow = vec!["*".to_string()];
+        // The lexer surfaces the rtk token inside the substitution, so this
+        // lands on the unattestable+already-rtk arm: an asserted ask
+        // (forced prompt) rather than a silent defer — never an allow.
         assert!(matches!(
             decide_with_rules("$(rtk rm -rf /)", &[], &[], &allow),
-            HookDecision::Defer
+            HookDecision::AskRewrite(_)
         ));
         assert!(!all_segments_already_rtk("FOO=1 rtk rm -rf /"));
         assert!(!all_segments_already_rtk("'rtk' rm -rf /"));
