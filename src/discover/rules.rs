@@ -783,15 +783,18 @@ pub const RULES: &[RtkRule] = &[
     },
     RtkRule {
         // `mvnd` is a separate binary, not a `mvn` wrapper — it must keep its
-        // own rtk_cmd so the daemon is what actually runs.
-        pattern: r"^mvnd\b(?:\s+\S+)*?\s+(compile|test|integration-test|package|install|verify|deploy)\b",
+        // own rtk_cmd so the daemon is what actually runs. mvnd ships
+        // `mvnd.cmd` on Windows; listed explicitly (longer prefix first) on
+        // both the pattern and rewrite_prefixes, mirroring the mvn rule's
+        // `mvnw.cmd` handling — `^mvnd\b` alone matches the `.` boundary in
+        // `mvnd.cmd` but can't then reach `\s+(compile|...)`, so it silently
+        // fails to classify the command at all.
+        pattern: r"^(?:mvnd\.cmd|mvnd)\b(?:\s+\S+)*?\s+(compile|test|integration-test|package|install|verify|deploy)\b",
         rtk_cmd: "rtk mvnd",
-        pipeline_final_safe: false,
-        rewrite_prefixes: &["mvnd"],
+        rewrite_prefixes: &["mvnd.cmd", "mvnd"],
         category: "Build",
         savings_pct: 82.0,
-        subcmd_savings: &[],
-        subcmd_status: &[],
+        ..RtkRule::DEFAULT
     },
     RtkRule {
         pattern: r"^ping\b",

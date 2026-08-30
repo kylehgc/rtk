@@ -4687,6 +4687,30 @@ mod tests {
         ));
     }
 
+    /// Upstream PR #3199 review, finding 5 — `mvnd.cmd` (mvnd's Windows
+    /// wrapper) must classify and rewrite to `rtk mvnd`, mirroring how the
+    /// mvn rule handles `mvnw.cmd`. `^mvnd\b` alone matches the `.` boundary
+    /// but can't then reach `\s+(compile|...)`, so it silently classified
+    /// as unsupported before `mvnd.cmd` was added to the pattern.
+    #[test]
+    fn test_classify_mvnd_cmd_wrapper() {
+        assert!(matches!(
+            classify_command("mvnd.cmd package"),
+            Classification::Supported {
+                rtk_equivalent: "rtk mvnd",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_rewrite_mvnd_cmd_clean_install() {
+        assert_eq!(
+            rewrite_command_no_prefixes("mvnd.cmd clean install", &[]),
+            Some("rtk mvnd clean install".into())
+        );
+    }
+
     // --- Compound operator edge cases ---
 
     #[test]
