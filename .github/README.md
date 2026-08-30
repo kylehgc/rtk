@@ -48,7 +48,7 @@ output *larger* and more correct. This fork does not claim to save more tokens t
 upstream — that is upstream's pitch. It claims to not lose your errors.
 
 <!-- FORK_DELTA_START -->
-**50 fixes in this fork that upstream does not have.** Each links to the commit,
+**56 fixes in this fork that upstream does not have.** Each links to the commit,
 where the original author is recorded. Adopted fixes come from community PRs that upstream
 has not merged — see the [adoption issues](https://github.com/kylehgc/rtk/issues?q=is%3Aissue+Adopt+upstream)
 for provenance.
@@ -60,6 +60,12 @@ upstream in another form.
 
 | Fix | Commit |
 |---|---|
+| fix(diff): preclear round 4 -- gate new sections on a following hunk | [`5939842`](https://github.com/kylehgc/rtk/commit/5939842) |
+| fix(diff): preclear round 3 -- keep the no-newline marker, strict UTF-8 gate | [`fb5a3dc`](https://github.com/kylehgc/rtk/commit/fb5a3dc) |
+| fix(diff): preclear round 2 -- file-level facts, sha256 mbox, contexts | [`25a17c0`](https://github.com/kylehgc/rtk/commit/25a17c0) |
+| fix(diff): preclear round 1 -- report hunkless empty-file sections, tighten guards | [`2219c6d`](https://github.com/kylehgc/rtk/commit/2219c6d) |
+| fix(diff): review round 1 -- byte-raw fallback, strict prefix width, fixture hygiene | [`8243d1a`](https://github.com/kylehgc/rtk/commit/8243d1a) |
+| fix(diff): region parser for condense_unified_diff -- budget-owned hunks, raw fallback | [`5a61595`](https://github.com/kylehgc/rtk/commit/5a61595) |
 | fix(diff): fall back to raw when a hunk budget disagrees with its body | [`1f64783`](https://github.com/kylehgc/rtk/commit/1f64783) |
 | fix(diff): close hunks on the @@ line budget; drop the phantom overflow trailer | [`8e65037`](https://github.com/kylehgc/rtk/commit/8e65037) |
 | fix(diff): end a hunk on any non-body line, not only `diff --git` | [`89cfe86`](https://github.com/kylehgc/rtk/commit/89cfe86) |
