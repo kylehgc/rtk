@@ -130,19 +130,43 @@ pub fn run_stdin(_verbose: u8) -> Result<()> {
     // the target file's bytes), and a hard error here loses the user's output.
     let mut bytes = Vec::new();
     io::stdin().read_to_end(&mut bytes)?;
-    let input = String::from_utf8_lossy(&bytes);
-    // `git diff --color` (or color.ui=always through a pipe) prefixes every
-    // line with an escape sequence; without stripping, nothing matches and
-    // the condensed output is silently empty.
-    let cleaned = crate::core::utils::strip_ansi(&input);
+    let raw = String::from_utf8_lossy(&bytes).into_owned();
 
-    let condensed = condense_unified_diff(&cleaned);
-    let shown = never_worse(&cleaned, &condensed);
-    println!("{}", shown);
-
-    timer.track("diff (stdin)", "rtk diff (stdin)", &input, shown);
+    match condense_stdin(&bytes) {
+        Some(condensed) => {
+            println!("{}", condensed);
+            timer.track("diff (stdin)", "rtk diff (stdin)", &raw, &condensed);
+        }
+        None => {
+            // Structural fallback: the caller's exact bytes, unmodified — a
+            // lossy UTF-8 decode or ANSI-stripped "raw" is not raw.
+            use std::io::Write;
+            let mut out = io::stdout();
+            out.write_all(&bytes)?;
+            if !bytes.is_empty() && !bytes.ends_with(b"\n") {
+                writeln!(out)?;
+            }
+            timer.track("diff (stdin)", "rtk diff (stdin)", &raw, &raw);
+        }
+    }
 
     Ok(())
+}
+
+/// Filter a piped byte stream: lossy-decode, strip ANSI (a `git diff
+/// --color` stream otherwise matches nothing and condenses to silence),
+/// parse strictly, and apply the never-worse guard. `None` means the caller
+/// must emit its exact input bytes.
+fn condense_stdin(bytes: &[u8]) -> Option<String> {
+    let input = String::from_utf8_lossy(bytes);
+    let cleaned = crate::core::utils::strip_ansi(&input);
+    let condensed = condense_unified_diff_strict(&cleaned)?;
+    // The never_worse contract, held at the byte level.
+    if std::ptr::eq(never_worse(&cleaned, &condensed), condensed.as_str()) {
+        Some(condensed)
+    } else {
+        None
+    }
 }
 
 #[derive(Debug)]
@@ -361,17 +385,6 @@ fn similarity(a: &str, b: &str) -> f64 {
     }
 }
 
-/// Condense a unified-diff stream: one `[file]` label per file section, every
-/// `+`/`-` content line kept verbatim at column 0, all metadata dropped.
-///
-/// Never truncates diff content — users make decisions based on this data.
-/// If the stream disagrees with its own structure (see the detector order on
-/// [`condense_unified_diff_strict`]), the input passes through unchanged
-/// rather than risking silent loss.
-fn condense_unified_diff(diff: &str) -> String {
-    condense_unified_diff_strict(diff).unwrap_or_else(|| diff.to_string())
-}
-
 /// One parsed file section of the stream.
 #[derive(Default)]
 struct FileEntry {
@@ -540,13 +553,12 @@ fn condense_unified_diff_strict(diff: &str) -> Option<String> {
                 continue;
             }
             let parents = h.old_left.len();
-            let mut prefix: Vec<char> = line.chars().take(parents).collect();
-            // Mailers strip trailing whitespace, so an all-context line may
-            // arrive shorter than the prefix width: pad as context.
-            while prefix.len() < parents {
-                prefix.push(' ');
-            }
-            if !prefix.iter().all(|c| matches!(c, ' ' | '-' | '+')) {
+            let prefix: Vec<char> = line.chars().take(parents).collect();
+            // A line shorter than the prefix width, or with any non-marker
+            // prefix column, contradicts the open budget: fall back rather
+            // than guess (a padding tolerance here would silently consume
+            // mangled lines as context).
+            if prefix.len() < parents || !prefix.iter().all(|c| matches!(c, ' ' | '-' | '+')) {
                 return None;
             }
             let in_result = !prefix.contains(&'-');
@@ -729,6 +741,15 @@ fn condense_unified_diff_strict(diff: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The filter's contract in one line, used throughout these tests:
+    /// condense strictly, and on structural disagreement pass the input
+    /// through unchanged rather than risk silent loss. (Production holds the
+    /// same contract at the byte level — see [`condense_stdin`] /
+    /// [`run_stdin`].)
+    fn condense_unified_diff(diff: &str) -> String {
+        condense_unified_diff_strict(diff).unwrap_or_else(|| diff.to_string())
+    }
 
     // --- similarity ---
 
@@ -1268,10 +1289,11 @@ diff --git a/b.rs b/b.rs
                         continue;
                     }
                     let parents = old.len();
-                    let mut prefix: Vec<char> = line.chars().take(parents).collect();
-                    while prefix.len() < parents {
-                        prefix.push(' ');
-                    }
+                    let prefix: Vec<char> = line.chars().take(parents).collect();
+                    assert!(
+                        prefix.len() == parents,
+                        "replay hit a short hunk line — corpus fixture malformed"
+                    );
                     let in_result = !prefix.contains(&'-');
                     for (k, left) in old.iter_mut().enumerate() {
                         if prefix[k] == '-' || (prefix[k] == ' ' && in_result) {
@@ -1423,6 +1445,62 @@ diff --git a/b.rs b/b.rs
             "deletion misnamed:\n{out}"
         );
         assert!(!out.contains("/dev/null"), "got:\n{out}");
+    }
+
+    #[test]
+    fn copy_only_and_mode_only_sections_are_reported() {
+        // Reproducer 8's remaining shapes: `git diff -C` copy sections and
+        // pure mode changes carry no hunks and used to vanish.
+        let copy = include_str!("../../../tests/fixtures/diff/git_diff_copy_raw.txt");
+        let out = condense_unified_diff(copy);
+        assert!(
+            out.contains("[file] copied_main.rs (copied from main.rs)"),
+            "got:\n{out}"
+        );
+        let mode = include_str!("../../../tests/fixtures/diff/git_diff_mode_raw.txt");
+        let out = condense_unified_diff(mode);
+        assert!(out.contains("[file] main.rs (mode changed)"), "got:\n{out}");
+    }
+
+    #[test]
+    fn short_line_inside_hunk_falls_back_to_raw() {
+        // A line shorter than the prefix width while a budget is open is a
+        // mangled patch (mailers strip trailing whitespace); guessing it into
+        // context would silently absorb damage, so it must fall back.
+        let diff = "--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n-old\n\n+new\n ctx\n";
+        assert!(condense_unified_diff_strict(diff).is_none());
+    }
+
+    // --- condense_stdin: the decode → strip-ANSI → parse → guard pipeline ---
+
+    #[test]
+    fn stdin_strips_ansi_before_parsing() {
+        // Reproducer 9: `git diff --color` through a pipe used to condense to
+        // a silently empty result.
+        let colored = "\u{1b}[1mdiff --git a/x b/x\u{1b}[m\n\u{1b}[1m--- a/x\u{1b}[m\n\u{1b}[1m+++ b/x\u{1b}[m\n\u{1b}[36m@@ -1 +1 @@\u{1b}[m\n\u{1b}[31m-old_line_content\u{1b}[m\n\u{1b}[32m+new_line_content\u{1b}[m\n";
+        let out = condense_stdin(colored.as_bytes()).expect("colored diff must parse");
+        assert!(out.contains("[file] x (+1 -1)"), "got:\n{out}");
+        assert!(out.lines().any(|l| l == "-old_line_content"));
+    }
+
+    #[test]
+    fn stdin_non_utf8_non_diff_falls_back_to_exact_bytes() {
+        // Reproducer 10: non-UTF-8 stdin used to be a hard error. When the
+        // stream is not a diff, the fallback must signal "emit the exact
+        // bytes" — a lossy re-encode of unparsed input would corrupt it.
+        let bytes = b"not a diff at all \xff\xfe just text\n";
+        assert!(condense_stdin(bytes).is_none());
+    }
+
+    #[test]
+    fn stdin_non_utf8_diff_content_filters_lossily() {
+        // When the stream IS a parseable diff, non-UTF-8 content bytes are
+        // shown with U+FFFD rather than aborting the whole filter.
+        let bytes: &[u8] =
+            b"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-caf\xe9 old\n+caf\xe9 new\n";
+        let out = condense_stdin(bytes).expect("diff with latin-1 content must parse");
+        assert!(out.contains('\u{FFFD}'), "got:\n{out}");
+        assert!(out.contains("[file] x (+1 -1)"), "got:\n{out}");
     }
 
     #[test]
