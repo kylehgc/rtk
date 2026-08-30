@@ -130,12 +130,13 @@ pub fn run_stdin(_verbose: u8) -> Result<()> {
     // the target file's bytes), and a hard error here loses the user's output.
     let mut bytes = Vec::new();
     io::stdin().read_to_end(&mut bytes)?;
-    let raw = String::from_utf8_lossy(&bytes).into_owned();
+    // One decode for the whole call: borrows when the stream is valid UTF-8.
+    let input = String::from_utf8_lossy(&bytes);
 
-    match condense_stdin(&bytes) {
+    match condense_stdin(&input) {
         Some(condensed) => {
             println!("{}", condensed);
-            timer.track("diff (stdin)", "rtk diff (stdin)", &raw, &condensed);
+            timer.track("diff (stdin)", "rtk diff (stdin)", &input, &condensed);
         }
         None => {
             // Structural fallback: the caller's exact bytes, unmodified — a
@@ -146,23 +147,25 @@ pub fn run_stdin(_verbose: u8) -> Result<()> {
             if !bytes.is_empty() && !bytes.ends_with(b"\n") {
                 writeln!(out)?;
             }
-            timer.track("diff (stdin)", "rtk diff (stdin)", &raw, &raw);
+            timer.track("diff (stdin)", "rtk diff (stdin)", &input, &input);
         }
     }
 
     Ok(())
 }
 
-/// Filter a piped byte stream: lossy-decode, strip ANSI (a `git diff
-/// --color` stream otherwise matches nothing and condenses to silence),
-/// parse strictly, and apply the never-worse guard. `None` means the caller
-/// must emit its exact input bytes.
-fn condense_stdin(bytes: &[u8]) -> Option<String> {
-    let input = String::from_utf8_lossy(bytes);
-    let cleaned = crate::core::utils::strip_ansi(&input);
+/// Filter a piped stream: strip ANSI (a `git diff --color` stream otherwise
+/// matches nothing and condenses to silence), parse strictly, and apply the
+/// never-worse guard. `None` means the caller must emit its exact input
+/// bytes.
+fn condense_stdin(input: &str) -> Option<String> {
+    let cleaned = crate::core::utils::strip_ansi(input);
     let condensed = condense_unified_diff_strict(&cleaned)?;
-    // The never_worse contract, held at the byte level.
-    if std::ptr::eq(never_worse(&cleaned, &condensed), condensed.as_str()) {
+    // The never_worse contract: when filtering would not shrink the stream,
+    // the caller's exact bytes win.
+    if crate::core::tracking::estimate_tokens(&condensed)
+        <= crate::core::tracking::estimate_tokens(&cleaned)
+    {
         Some(condensed)
     } else {
         None
@@ -510,10 +513,13 @@ fn parse_hunk_header(line: &str) -> Option<(Vec<usize>, usize)> {
 /// 5. `@@` after a file header opens a hunk; a malformed `@@` line there is
 ///    `None`. Before any file section (a hunk quoted in commit prose) it
 ///    stays prose.
-/// 6. A line of exactly `--`/`-- ` outside a hunk is the format-patch
-///    signature separator: prose. This is the single value-keyed exclusion,
-///    kept because every patch `git format-patch` emits ends with one; its
-///    body (`2.54.0`) is unmarked and needs no region.
+/// 6. In a stream that carried an mbox `From <sha>` separator, a line of
+///    exactly `--`/`-- ` outside a hunk is the format-patch signature
+///    separator: prose. This is the single value-keyed exclusion, kept
+///    because every patch `git format-patch` emits ends with one; its body
+///    (`2.54.0`) is unmarked and needs no region. Streams that never had an
+///    mbox separator (plain `git diff`, `diff -u`) get no such tolerance —
+///    a bare `--` there falls to rule 7.
 /// 7. Any other `+`/`-` marked line outside a hunk and after the prologue is
 ///    evidence of a stale or under-declared budget → `None`. (Well-formed
 ///    unified diffs have no content outside hunks.)
@@ -529,6 +535,8 @@ fn condense_unified_diff_strict(diff: &str) -> Option<String> {
     let mut hunk: Option<HunkBudget> = None;
     // Stream start is the prologue: mbox headers, commit message, diffstat.
     let mut in_prologue = true;
+    // Signature tolerance (rule 6) is earned by an mbox separator.
+    let mut seen_mbox_from = false;
 
     fn flush(entries: &mut Vec<FileEntry>, current: &mut Option<FileEntry>) {
         if let Some(e) = current.take() {
@@ -553,20 +561,25 @@ fn condense_unified_diff_strict(diff: &str) -> Option<String> {
                 continue;
             }
             let parents = h.old_left.len();
-            let prefix: Vec<char> = line.chars().take(parents).collect();
             // A line shorter than the prefix width, or with any non-marker
             // prefix column, contradicts the open budget: fall back rather
             // than guess (a padding tolerance here would silently consume
-            // mangled lines as context).
-            if prefix.len() < parents || !prefix.iter().all(|c| matches!(c, ' ' | '-' | '+')) {
+            // mangled lines as context). Markers are ASCII, so the byte view
+            // is exact and allocation-free.
+            let lb = line.as_bytes();
+            if lb.len() < parents {
                 return None;
             }
-            let in_result = !prefix.contains(&'-');
+            let prefix = &lb[..parents];
+            if !prefix.iter().all(|b| matches!(b, b' ' | b'-' | b'+')) {
+                return None;
+            }
+            let in_result = !prefix.contains(&b'-');
             for (k, left) in h.old_left.iter_mut().enumerate() {
                 // Present in parent k: removed relative to it, or unchanged
                 // and present in the result (a ' ' column on a line some
                 // other parent removed is filler, not presence).
-                if prefix[k] == '-' || (prefix[k] == ' ' && in_result) {
+                if prefix[k] == b'-' || (prefix[k] == b' ' && in_result) {
                     *left = left.checked_sub(1)?;
                 }
             }
@@ -574,10 +587,10 @@ fn condense_unified_diff_strict(diff: &str) -> Option<String> {
                 h.new_left = h.new_left.checked_sub(1)?;
             }
             let entry = current.as_mut()?;
-            if prefix.contains(&'-') {
+            if prefix.contains(&b'-') {
                 entry.removed += 1;
                 entry.changes.push(raw.to_string());
-            } else if prefix.contains(&'+') {
+            } else if prefix.contains(&b'+') {
                 entry.added += 1;
                 entry.changes.push(raw.to_string());
             }
@@ -591,6 +604,7 @@ fn condense_unified_diff_strict(diff: &str) -> Option<String> {
         if is_mbox_from(line) {
             flush(&mut entries, &mut current);
             in_prologue = true;
+            seen_mbox_from = true;
             continue;
         }
 
@@ -645,6 +659,16 @@ fn condense_unified_diff_strict(diff: &str) -> Option<String> {
                 e.notes.push("mode changed".to_string());
                 continue;
             }
+            // Without these two arms, a hunkless empty-file section has no
+            // changes and no notes and would vanish at flush.
+            if line.starts_with("new file mode ") {
+                e.notes.push("new file".to_string());
+                continue;
+            }
+            if line.starts_with("deleted file mode ") {
+                e.notes.push("deleted".to_string());
+                continue;
+            }
         }
 
         // Rule 4: `--- X` + `+++ Y` header pair.
@@ -691,8 +715,8 @@ fn condense_unified_diff_strict(diff: &str) -> Option<String> {
             }
         }
 
-        // Rule 6: format-patch signature separator.
-        if line == "--" || line == "-- " {
+        // Rule 6: format-patch signature separator, only in mbox streams.
+        if seen_mbox_from && (line == "--" || line == "-- ") {
             continue;
         }
 
@@ -1441,7 +1465,7 @@ diff --git a/b.rs b/b.rs
             include_str!("../../../tests/fixtures/diff/git_diff_rename_delete_binary_raw.txt");
         let out = condense_unified_diff(fixture);
         assert!(
-            out.contains("[file] doomed.txt (+0 -3)"),
+            out.contains("[file] doomed.txt (deleted) (+0 -3)"),
             "deletion misnamed:\n{out}"
         );
         assert!(!out.contains("/dev/null"), "got:\n{out}");
@@ -1463,6 +1487,35 @@ diff --git a/b.rs b/b.rs
     }
 
     #[test]
+    fn empty_new_and_deleted_files_are_reported_in_multi_file_streams() {
+        // A hunkless `new file mode` / `deleted file mode` section (an empty
+        // file added or removed) has no changes and no other note; without
+        // its own arm it vanished silently whenever another file in the same
+        // stream parsed cleanly.
+        let fixture =
+            include_str!("../../../tests/fixtures/diff/git_diff_empty_new_deleted_raw.txt");
+        let out = condense_unified_diff(fixture);
+        assert!(
+            out.contains("[file] empty_new.txt (new file)"),
+            "empty added file vanished:\n{out}"
+        );
+        assert!(
+            out.contains("[file] empty_seed.txt (deleted)"),
+            "empty deleted file vanished:\n{out}"
+        );
+        assert!(out.contains("[file] main.rs (+1 -0)"), "got:\n{out}");
+    }
+
+    #[test]
+    fn signature_tolerance_requires_an_mbox_stream() {
+        // A bare `--` leftover in a plain (non-mbox) stream is stale-budget
+        // evidence, not a signature; only format-patch streams (which always
+        // open with `From <sha>`) earn the rule-6 exclusion.
+        let plain = "--- a/f\n+++ b/f\n@@ -1 +1 @@\n-old\n+new\n--\n";
+        assert!(condense_unified_diff_strict(plain).is_none());
+    }
+
+    #[test]
     fn short_line_inside_hunk_falls_back_to_raw() {
         // A line shorter than the prefix width while a budget is open is a
         // mangled patch (mailers strip trailing whitespace); guessing it into
@@ -1478,7 +1531,7 @@ diff --git a/b.rs b/b.rs
         // Reproducer 9: `git diff --color` through a pipe used to condense to
         // a silently empty result.
         let colored = "\u{1b}[1mdiff --git a/x b/x\u{1b}[m\n\u{1b}[1m--- a/x\u{1b}[m\n\u{1b}[1m+++ b/x\u{1b}[m\n\u{1b}[36m@@ -1 +1 @@\u{1b}[m\n\u{1b}[31m-old_line_content\u{1b}[m\n\u{1b}[32m+new_line_content\u{1b}[m\n";
-        let out = condense_stdin(colored.as_bytes()).expect("colored diff must parse");
+        let out = condense_stdin(colored).expect("colored diff must parse");
         assert!(out.contains("[file] x (+1 -1)"), "got:\n{out}");
         assert!(out.lines().any(|l| l == "-old_line_content"));
     }
@@ -1489,7 +1542,7 @@ diff --git a/b.rs b/b.rs
         // stream is not a diff, the fallback must signal "emit the exact
         // bytes" — a lossy re-encode of unparsed input would corrupt it.
         let bytes = b"not a diff at all \xff\xfe just text\n";
-        assert!(condense_stdin(bytes).is_none());
+        assert!(condense_stdin(&String::from_utf8_lossy(bytes)).is_none());
     }
 
     #[test]
@@ -1498,7 +1551,8 @@ diff --git a/b.rs b/b.rs
         // shown with U+FFFD rather than aborting the whole filter.
         let bytes: &[u8] =
             b"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-caf\xe9 old\n+caf\xe9 new\n";
-        let out = condense_stdin(bytes).expect("diff with latin-1 content must parse");
+        let out = condense_stdin(&String::from_utf8_lossy(bytes))
+            .expect("diff with latin-1 content must parse");
         assert!(out.contains('\u{FFFD}'), "got:\n{out}");
         assert!(out.contains("[file] x (+1 -1)"), "got:\n{out}");
     }
