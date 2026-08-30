@@ -61,9 +61,10 @@ pub(crate) fn check_command_with_rules(
 
     // Deny takes highest priority and pre-empts every other construct.
     for segment in &segments {
-        let segment = segment.trim();
+        let raw = segment.trim();
+        let normalized = normalize_for_matching(raw);
         for pattern in deny_rules {
-            if command_matches_pattern(segment, pattern) {
+            if segment_matches(raw, normalized, pattern) {
                 return PermissionVerdict::Deny;
             }
         }
@@ -82,16 +83,17 @@ pub(crate) fn check_command_with_rules(
     let mut saw_segment = false;
 
     for segment in &segments {
-        let segment = segment.trim();
-        if segment.is_empty() {
+        let raw = segment.trim();
+        if raw.is_empty() {
             continue;
         }
+        let normalized = normalize_for_matching(raw);
         saw_segment = true;
 
         // Ask — if any segment matches an ask rule, the final verdict is Ask.
         if !any_ask {
             for pattern in ask_rules {
-                if command_matches_pattern(segment, pattern) {
+                if segment_matches(raw, normalized, pattern) {
                     any_ask = true;
                     break;
                 }
@@ -103,7 +105,7 @@ pub(crate) fn check_command_with_rules(
         if all_segments_allowed {
             let matched = allow_rules
                 .iter()
-                .any(|pattern| command_matches_pattern(segment, pattern));
+                .any(|pattern| segment_matches(raw, normalized, pattern));
             if !matched {
                 all_segments_allowed = false;
             }
@@ -373,6 +375,113 @@ pub(crate) fn extract_bash_pattern(rule: &str) -> &str {
         }
     }
     rule
+}
+
+/// Strips leading `rtk` invocation tokens from a permission-check segment.
+///
+/// Permission rules (e.g. `Bash(grep *)`) are written against the
+/// underlying tool the user actually typed, but once an agent host has
+/// seen RTK's rewritten form it sometimes issues `rtk grep …` directly on
+/// a later turn — a segment that no longer looks like the original tool
+/// invocation to either RTK's own matcher or the host's native one, so
+/// deny/ask/allow rules alike silently stop applying (rtk-ai/rtk#3152).
+/// Normalizing here — right before matching — keeps the deny/ask/allow
+/// checks meaningful regardless of which form the command arrives in.
+///
+/// Contract: a leading `rtk` token followed by at least one ASCII IFS
+/// whitespace character and more text is removed, repeatedly
+/// (`rtk rtk grep x` → `grep x`, `rtk\tgrep x` → `grep x`); after each
+/// removed `rtk`, one wrapper verb from [`COMMAND_WRAPPERS`] is removed
+/// the same way (`rtk proxy rm -rf /` → `rm -rf /`). Bare `rtk` and
+/// segments whose first token merely starts with `rtk` (`rtkinit --help`)
+/// are returned unchanged. Matching runs against BOTH the raw and the
+/// normalized form (see [`segment_matches`]), so rules written against
+/// `rtk` itself keep applying too.
+pub(crate) fn normalize_for_matching(segment: &str) -> &str {
+    let mut s = segment;
+    loop {
+        let Some(after_rtk) = strip_token(s, "rtk") else {
+            return s;
+        };
+        s = COMMAND_WRAPPERS
+            .iter()
+            .find_map(|wrapper| strip_token(after_rtk, wrapper))
+            .unwrap_or(after_rtk);
+    }
+}
+
+/// RTK subcommands whose arguments are themselves the executed command:
+/// `rtk proxy <cmd>` runs `<cmd>` raw, `rtk run …` shells out its string
+/// via `sh -c`, and `rtk err/test/summary <cmd>` run `<cmd>` and filter
+/// its output. For permission matching the effective command is the
+/// wrapped one, so deny/ask rules are matched against the stripped form —
+/// best-effort only: matching is token-literal, and quoted or string-form
+/// arguments (`rtk run -c "rm -rf /"`, `rtk proxy "rm" -rf /`) may not
+/// match. That is why wrapped invocations are also excluded from the
+/// hook's assert gates via [`is_wrapped_invocation`]: over-firing a deny
+/// is fail-safe, asserting an allow for text RTK cannot decompose is not.
+/// This list is exhaustive over `main.rs`'s top-level `Commands` enum:
+/// every other variant either proxies the tool it is named after
+/// (`rtk grep …` IS `grep …`) or never executes its argument
+/// (`rtk rewrite`, `rtk hook check`).
+const COMMAND_WRAPPERS: [&str; 5] = ["proxy", "run", "err", "test", "summary"];
+
+/// True when `segment` reaches its executed command through one of
+/// [`COMMAND_WRAPPERS`]. Such segments are matched best-effort for
+/// deny/ask rules but must never be allow-asserted via the hook's
+/// already-rtk (no-rewrite) arm: the wrapper's argument is arbitrary
+/// text RTK cannot fully attest. (Ask and deny asserts are not excluded
+/// — they can only ever produce a prompt or a block, so over-firing is
+/// fail-safe.)
+pub(crate) fn is_wrapped_invocation(segment: &str) -> bool {
+    let mut s = segment;
+    loop {
+        let Some(after_rtk) = strip_token(s, "rtk") else {
+            return false;
+        };
+        if COMMAND_WRAPPERS
+            .iter()
+            .any(|wrapper| strip_token(after_rtk, wrapper).is_some())
+        {
+            return true;
+        }
+        s = after_rtk;
+    }
+}
+
+/// Strips `token` from the start of `s` when it is followed by at least
+/// one ASCII IFS whitespace character (space, tab, CR, LF) and more text;
+/// returns `None` for a bare token, a longer word sharing the prefix, or
+/// no prefix at all. ASCII IFS only: the shell word-splits on it, while
+/// unicode whitespace like NBSP glues into one word the shell cannot
+/// execute — stripping across it would normalize text the shell never
+/// runs.
+fn strip_token<'a>(s: &'a str, token: &str) -> Option<&'a str> {
+    let rest = s.strip_prefix(token)?;
+    let stripped = rest.trim_start_matches([' ', '\t', '\r', '\n']);
+    if stripped.is_empty() || stripped.len() == rest.len() {
+        return None;
+    }
+    Some(stripped)
+}
+
+/// True when `segment` is an `rtk …` invocation or bare `rtk` — i.e. text
+/// a host's native permission matcher would not recognize as the
+/// underlying tool. Single predicate behind BOTH hook gates — the
+/// any-segment deny gate and the all-segments allow gate (see the
+/// quantifier note above `hook_cmd::contains_already_rtk_segment`).
+pub(crate) fn is_rtk_prefixed(segment: &str) -> bool {
+    segment == "rtk" || normalize_for_matching(segment).len() != segment.len()
+}
+
+/// A pattern matches a segment when it matches either the raw text (rules
+/// written against `rtk` itself, and every pre-#3152 rule) or the
+/// rtk-stripped form (rules written against the underlying tool). Matching
+/// only the stripped form would silently disable existing `Bash(rtk:*)`
+/// deny/ask rules — a fail-unsafe regression.
+fn segment_matches(raw: &str, normalized: &str, pattern: &str) -> bool {
+    command_matches_pattern(raw, pattern)
+        || (raw.len() != normalized.len() && command_matches_pattern(normalized, pattern))
 }
 
 /// Check if `cmd` matches a Claude Code permission pattern.
@@ -1164,6 +1273,192 @@ mod tests {
         let mut out = Vec::new();
         append_wrapped_rules(Some(&v), &["run_shell_command(", "ShellTool("], &mut out);
         assert_eq!(out, vec!["git", "npm test", "*"]);
+    }
+
+    // --- Regression tests for #3152 ---
+    // Allow/ask/deny rules are written against the underlying tool (e.g.
+    // `Bash(grep *)`), but Claude sometimes issues the already-rewritten
+    // `rtk grep …` form directly on a later turn. Rules must still apply.
+
+    #[test]
+    fn test_already_rtk_matches_allow_rule() {
+        let allow = vec!["grep *".to_string(), "ls *".to_string()];
+        assert_eq!(
+            check_command_with_rules("rtk grep -n foo bar.py", &[], &[], &allow),
+            PermissionVerdict::Allow
+        );
+        assert_eq!(
+            check_command_with_rules("rtk ls -la", &[], &[], &allow),
+            PermissionVerdict::Allow
+        );
+    }
+
+    #[test]
+    fn test_already_rtk_still_matches_deny_rule() {
+        // A deny rule must not be bypassable just because the command
+        // arrives pre-rewritten — this is the security-relevant half of #3152.
+        let deny = vec!["rm:*".to_string()];
+        let allow = vec!["*".to_string()];
+        assert_eq!(
+            check_command_with_rules("rtk rm -rf /", &deny, &[], &allow),
+            PermissionVerdict::Deny
+        );
+    }
+
+    #[test]
+    fn test_already_rtk_still_matches_ask_rule() {
+        let ask = vec!["git push".to_string()];
+        assert_eq!(
+            check_command_with_rules("rtk git push origin main", &[], &ask, &[]),
+            PermissionVerdict::Ask
+        );
+    }
+
+    // --- Fork amendments to #3195: both-forms matching + robust strip ---
+
+    #[test]
+    fn test_normalize_for_matching_contract() {
+        assert_eq!(normalize_for_matching("rtk grep foo"), "grep foo");
+        assert_eq!(normalize_for_matching("rtk rtk grep foo"), "grep foo");
+        assert_eq!(normalize_for_matching("rtk\tgrep foo"), "grep foo");
+        assert_eq!(normalize_for_matching("rtk\r\ngrep foo"), "grep foo");
+        assert_eq!(normalize_for_matching("rtk  grep foo"), "grep foo");
+        assert_eq!(normalize_for_matching("rtk"), "rtk");
+        assert_eq!(normalize_for_matching("rtkinit --help"), "rtkinit --help");
+        assert_eq!(normalize_for_matching("grep foo"), "grep foo");
+        // Unicode whitespace is NOT a word boundary to the shell — the whole
+        // thing is one unexecutable word, so it must not normalize.
+        assert_eq!(
+            normalize_for_matching("rtk\u{A0}grep foo"),
+            "rtk\u{A0}grep foo"
+        );
+        // Command wrappers: the executed command is the wrapped one.
+        assert_eq!(normalize_for_matching("rtk proxy rm -rf /"), "rm -rf /");
+        assert_eq!(
+            normalize_for_matching("rtk err npm run build"),
+            "npm run build"
+        );
+        assert_eq!(normalize_for_matching("rtk test cargo test"), "cargo test");
+        assert_eq!(normalize_for_matching("rtk summary make all"), "make all");
+        assert_eq!(normalize_for_matching("rtk rtk proxy rm -rf /"), "rm -rf /");
+        // Wrapper verbs only count directly after an `rtk` token, as whole
+        // tokens, and only when a command follows.
+        assert_eq!(normalize_for_matching("proxy rm -rf /"), "proxy rm -rf /");
+        assert_eq!(normalize_for_matching("rtk proxyfoo bar"), "proxyfoo bar");
+        assert_eq!(normalize_for_matching("rtk proxy"), "proxy");
+    }
+
+    #[test]
+    fn test_is_wrapped_invocation_contract() {
+        assert!(is_wrapped_invocation("rtk proxy rm -rf /"));
+        assert!(is_wrapped_invocation("rtk run -c \"rm -rf /\""));
+        assert!(is_wrapped_invocation("rtk rtk proxy rm"));
+        assert!(is_wrapped_invocation("rtk err cargo build"));
+        assert!(!is_wrapped_invocation("rtk grep foo"));
+        assert!(!is_wrapped_invocation("proxy rm -rf /"));
+        assert!(!is_wrapped_invocation("rtk proxy"));
+        assert!(!is_wrapped_invocation("rm -rf /"));
+        assert!(!is_wrapped_invocation("rtk proxyfoo bar"));
+    }
+
+    #[test]
+    fn test_run_wrapper_deny_rule_fires() {
+        // `rtk run <cmd>` shells out via sh -c — same class as proxy.
+        let deny = vec!["rm:*".to_string()];
+        let allow = vec!["rtk:*".to_string()];
+        assert_eq!(
+            check_command_with_rules("rtk run rm -rf /", &deny, &[], &allow),
+            PermissionVerdict::Deny
+        );
+    }
+
+    #[test]
+    fn test_wrapped_command_deny_rule_fires() {
+        // Security half of the wrapper strip: a deny against the wrapped
+        // tool must fire even when the rtk form itself is allowlisted.
+        let deny = vec!["rm:*".to_string()];
+        let allow = vec!["rtk:*".to_string()];
+        assert_eq!(
+            check_command_with_rules("rtk proxy rm -rf /", &deny, &[], &allow),
+            PermissionVerdict::Deny
+        );
+    }
+
+    #[test]
+    fn test_is_rtk_prefixed_contract() {
+        assert!(is_rtk_prefixed("rtk"));
+        assert!(is_rtk_prefixed("rtk rm -rf /"));
+        assert!(is_rtk_prefixed("rtk\trm -rf /"));
+        assert!(is_rtk_prefixed("rtk rtk rm"));
+        assert!(!is_rtk_prefixed("rm -rf /"));
+        assert!(!is_rtk_prefixed("rtkinit --help"));
+    }
+
+    #[test]
+    fn test_rtk_form_deny_rule_still_matches() {
+        // A deny written against the rtk-prefixed form itself must keep
+        // firing: stripping must augment matching, never replace it — even
+        // when an allow rule matches the stripped form.
+        let deny = vec!["rtk:*".to_string()];
+        let allow = vec!["git push:*".to_string()];
+        assert_eq!(
+            check_command_with_rules("rtk git push origin", &deny, &[], &allow),
+            PermissionVerdict::Deny
+        );
+    }
+
+    #[test]
+    fn test_rtk_form_ask_and_allow_rules_still_match() {
+        let ask = vec!["rtk git push:*".to_string()];
+        assert_eq!(
+            check_command_with_rules("rtk git push origin", &[], &ask, &[]),
+            PermissionVerdict::Ask
+        );
+        let allow = vec!["rtk:*".to_string()];
+        assert_eq!(
+            check_command_with_rules("rtk grep -n foo", &[], &[], &allow),
+            PermissionVerdict::Allow
+        );
+    }
+
+    #[test]
+    fn test_repeated_rtk_prefix_still_matches_deny() {
+        // `rtk rtk rm …` must not evade an rm deny via the double prefix,
+        // even when a broad allow would otherwise match.
+        let deny = vec!["rm:*".to_string()];
+        let allow = vec!["*".to_string()];
+        assert_eq!(
+            check_command_with_rules("rtk rtk rm -rf /", &deny, &[], &allow),
+            PermissionVerdict::Deny
+        );
+    }
+
+    #[test]
+    fn test_whitespace_after_rtk_still_matches_deny() {
+        let deny = vec!["rm:*".to_string()];
+        for cmd in ["rtk\trm -rf /", "rtk  rm -rf /"] {
+            assert_eq!(
+                check_command_with_rules(cmd, &deny, &[], &[]),
+                PermissionVerdict::Deny,
+                "{cmd} must match the rm deny rule"
+            );
+        }
+    }
+
+    #[test]
+    fn test_already_rtk_compound_all_segments_checked() {
+        // Mirrors #1213's per-segment requirement: every segment of an
+        // already-rtk compound command must independently match.
+        let allow = vec!["git status *".to_string(), "git status".to_string()];
+        assert_eq!(
+            check_command_with_rules("rtk git status && rtk git add .", &[], &[], &allow),
+            PermissionVerdict::Default,
+            "unallowed second segment must demote the whole chain, even pre-rewritten"
+        );
+        assert_eq!(
+            check_command_with_rules("rtk git status && rtk git status -s", &[], &[], &allow),
+            PermissionVerdict::Allow
+        );
     }
 
     #[test]
