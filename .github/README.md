@@ -48,7 +48,7 @@ output *larger* and more correct. This fork does not claim to save more tokens t
 upstream — that is upstream's pitch. It claims to not lose your errors.
 
 <!-- FORK_DELTA_START -->
-**56 fixes in this fork that upstream does not have.** Each links to the commit,
+**62 fixes in this fork that upstream does not have.** Each links to the commit,
 where the original author is recorded. Adopted fixes come from community PRs that upstream
 has not merged — see the [adoption issues](https://github.com/kylehgc/rtk/issues?q=is%3Aissue+Adopt+upstream)
 for provenance.
@@ -60,6 +60,12 @@ upstream in another form.
 
 | Fix | Commit |
 |---|---|
+| fix(hooks): broaden ask assert to any-segment; silence no-op renders | [`31fceff`](https://github.com/kylehgc/rtk/commit/31fceff) |
+| fix(hooks): add rtk run to wrappers; never assert for wrapped invocations | [`d9e7458`](https://github.com/kylehgc/rtk/commit/d9e7458) |
+| fix(hooks): see through rtk command wrappers; assert ask for already-rtk | [`505e355`](https://github.com/kylehgc/rtk/commit/505e355) |
+| fix(hooks): require every segment rtk-prefixed before asserting Allow | [`371e058`](https://github.com/kylehgc/rtk/commit/371e058) |
+| fix(hooks): harden already-rtk permission matching (amendments to upstream #3195) | [`8adbeba`](https://github.com/kylehgc/rtk/commit/8adbeba) |
+| fix(hooks): honor permission rules for already-rtk-prefixed commands | [`30557a6`](https://github.com/kylehgc/rtk/commit/30557a6) |
 | fix(diff): preclear round 4 -- gate new sections on a following hunk | [`5939842`](https://github.com/kylehgc/rtk/commit/5939842) |
 | fix(diff): preclear round 3 -- keep the no-newline marker, strict UTF-8 gate | [`fb5a3dc`](https://github.com/kylehgc/rtk/commit/fb5a3dc) |
 | fix(diff): preclear round 2 -- file-level facts, sha256 mbox, contexts | [`25a17c0`](https://github.com/kylehgc/rtk/commit/25a17c0) |
