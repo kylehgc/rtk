@@ -7,6 +7,7 @@ diff -ru a/f1.txt b/f1.txt
 +BETA
  gamma
 +delta
+Binary files a/img.bin and b/img.bin differ
 Only in b: newfile.txt
 diff -ru a/sub/deep.txt b/sub/deep.txt
 --- a/sub/deep.txt	2026-08-29 22:45:15.660427700 -0400

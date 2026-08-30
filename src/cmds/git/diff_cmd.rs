@@ -2,7 +2,7 @@
 
 use crate::core::guard::never_worse;
 use crate::core::tracking;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
 
@@ -129,7 +129,9 @@ pub fn run_stdin(_verbose: u8) -> Result<()> {
     // Bytes, not String: piped diffs are not guaranteed UTF-8 (patches quote
     // the target file's bytes), and a hard error here loses the user's output.
     let mut bytes = Vec::new();
-    io::stdin().read_to_end(&mut bytes)?;
+    io::stdin()
+        .read_to_end(&mut bytes)
+        .context("Failed to read diff from stdin")?;
     // One decode for the whole call: borrows when the stream is valid UTF-8.
     let input = String::from_utf8_lossy(&bytes);
 
@@ -143,9 +145,10 @@ pub fn run_stdin(_verbose: u8) -> Result<()> {
             // lossy UTF-8 decode or ANSI-stripped "raw" is not raw.
             use std::io::Write;
             let mut out = io::stdout();
-            out.write_all(&bytes)?;
+            out.write_all(&bytes)
+                .context("Failed to write raw diff to stdout")?;
             if !bytes.is_empty() && !bytes.ends_with(b"\n") {
-                writeln!(out)?;
+                writeln!(out).context("Failed to write raw diff to stdout")?;
             }
             timer.track("diff (stdin)", "rtk diff (stdin)", &input, &input);
         }
@@ -427,12 +430,15 @@ impl HunkBudget {
     }
 }
 
-/// True for the mbox `From <40-hex-sha> <date>` separator `git format-patch`
-/// puts before each patch.
+/// True for the mbox `From <sha> <date>` separator `git format-patch` puts
+/// before each patch. The sha is 40 hex digits in SHA-1 repos and 64 in
+/// SHA-256 repos; both are accepted.
 fn is_mbox_from(line: &str) -> bool {
     line.strip_prefix("From ").is_some_and(|rest| {
         let b = rest.as_bytes();
-        b.len() > 40 && b[..40].iter().all(|c| c.is_ascii_hexdigit()) && b[40] == b' '
+        [40usize, 64].iter().any(|&n| {
+            b.len() > n && b[..n].iter().all(|c| c.is_ascii_hexdigit()) && b[n] == b' '
+        })
     })
 }
 
@@ -513,17 +519,28 @@ fn parse_hunk_header(line: &str) -> Option<(Vec<usize>, usize)> {
 /// 5. `@@` after a file header opens a hunk; a malformed `@@` line there is
 ///    `None`. Before any file section (a hunk quoted in commit prose) it
 ///    stays prose.
-/// 6. In a stream that carried an mbox `From <sha>` separator, a line of
+/// 6. File-level facts producers emit outside hunks become note-only
+///    entries: `Only in <dir>: <file>` and standalone `Binary files X and Y
+///    differ` (GNU `diff -r`), `* Unmerged path <file>` (`git diff --ours`
+///    et al. during a merge), and `Submodule <name> <a>..<b>` headers.
+///    These arms are suppressed inside an mbox message region (from a
+///    `From <sha>` separator to that patch's first file header), where
+///    column-0 prose is indistinguishable from them by value.
+/// 7. In a stream that carried an mbox `From <sha>` separator, a line of
 ///    exactly `--`/`-- ` outside a hunk is the format-patch signature
 ///    separator: prose. This is the single value-keyed exclusion, kept
 ///    because every patch `git format-patch` emits ends with one; its body
 ///    (`2.54.0`) is unmarked and needs no region. Streams that never had an
 ///    mbox separator (plain `git diff`, `diff -u`) get no such tolerance —
-///    a bare `--` there falls to rule 7.
-/// 7. Any other `+`/`-` marked line outside a hunk and after the prologue is
+///    a bare `--` there falls to rule 8. (Bound: in a malformed mbox stream
+///    a stale-budget leftover of exactly `--` is swallowed as a signature;
+///    every other leftover value still falls through.)
+/// 8. Any other `+`/`-` marked line outside a hunk and after the prologue is
 ///    evidence of a stale or under-declared budget → `None`. (Well-formed
-///    unified diffs have no content outside hunks.)
-/// 8. Everything else is prose and is dropped.
+///    unified diffs have no content outside hunks. The prologue exclusion
+///    means a hunk quoted in patch prose stays prose — including its marked
+///    lines.)
+/// 9. Everything else is prose and is dropped.
 fn condense_unified_diff_strict(diff: &str) -> Option<String> {
     let mut lines: Vec<&str> = diff.split('\n').collect();
     if lines.last() == Some(&"") {
@@ -535,8 +552,11 @@ fn condense_unified_diff_strict(diff: &str) -> Option<String> {
     let mut hunk: Option<HunkBudget> = None;
     // Stream start is the prologue: mbox headers, commit message, diffstat.
     let mut in_prologue = true;
-    // Signature tolerance (rule 6) is earned by an mbox separator.
+    // Signature tolerance (rule 7) is earned by an mbox separator.
     let mut seen_mbox_from = false;
+    // True from a `From <sha>` separator to that patch's first file header:
+    // the only region where column-0 prose can imitate the rule-6 facts.
+    let mut in_mbox_message = false;
 
     fn flush(entries: &mut Vec<FileEntry>, current: &mut Option<FileEntry>) {
         if let Some(e) = current.take() {
@@ -605,6 +625,7 @@ fn condense_unified_diff_strict(diff: &str) -> Option<String> {
             flush(&mut entries, &mut current);
             in_prologue = true;
             seen_mbox_from = true;
+            in_mbox_message = true;
             continue;
         }
 
@@ -616,6 +637,7 @@ fn condense_unified_diff_strict(diff: &str) -> Option<String> {
         {
             flush(&mut entries, &mut current);
             in_prologue = false;
+            in_mbox_message = false;
             // Fallback name only; `rename to` or the `+++` header refine it.
             let name = rest
                 .rfind(" b/")
@@ -690,6 +712,7 @@ fn condense_unified_diff_strict(diff: &str) -> Option<String> {
                     }
                 }
                 in_prologue = false;
+                in_mbox_message = false;
                 i += 1; // consume the `+++` line too
                 continue;
             }
@@ -715,17 +738,68 @@ fn condense_unified_diff_strict(diff: &str) -> Option<String> {
             }
         }
 
-        // Rule 6: format-patch signature separator, only in mbox streams.
+        // Rule 6: file-level facts outside hunks, suppressed in mbox prose.
+        if !in_mbox_message {
+            if let Some(rest) = line.strip_prefix("Only in ") {
+                if let Some((dir, file)) = rest.rsplit_once(": ") {
+                    flush(&mut entries, &mut current);
+                    entries.push(FileEntry {
+                        name: format!("{}/{}", dir, file),
+                        notes: vec!["only in one side".to_string()],
+                        ..FileEntry::default()
+                    });
+                    continue;
+                }
+            }
+            // Standalone GNU `diff -r` form; the git form attaches to its
+            // open `diff --git` section in the extended-header block above.
+            if let Some(pair) = line
+                .strip_prefix("Binary files ")
+                .and_then(|r| r.strip_suffix(" differ"))
+            {
+                let name = pair.rsplit_once(" and ").map(|(_, b)| b).unwrap_or(pair);
+                let name = name.strip_prefix("b/").unwrap_or(name).to_string();
+                flush(&mut entries, &mut current);
+                entries.push(FileEntry {
+                    name,
+                    notes: vec!["binary".to_string()],
+                    ..FileEntry::default()
+                });
+                continue;
+            }
+            if let Some(path) = line.strip_prefix("* Unmerged path ") {
+                flush(&mut entries, &mut current);
+                entries.push(FileEntry {
+                    name: path.to_string(),
+                    notes: vec!["unmerged".to_string()],
+                    ..FileEntry::default()
+                });
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("Submodule ") {
+                if rest.contains("..") {
+                    flush(&mut entries, &mut current);
+                    entries.push(FileEntry {
+                        name: rest.trim_end_matches(':').to_string(),
+                        notes: vec!["submodule".to_string()],
+                        ..FileEntry::default()
+                    });
+                    continue;
+                }
+            }
+        }
+
+        // Rule 7: format-patch signature separator, only in mbox streams.
         if seen_mbox_from && (line == "--" || line == "-- ") {
             continue;
         }
 
-        // Rule 7: content outside any hunk → stale budget, fall back.
+        // Rule 8: content outside any hunk → stale budget, fall back.
         if (line.starts_with('+') || line.starts_with('-')) && !in_prologue {
             return None;
         }
 
-        // Rule 8: prose.
+        // Rule 9: prose.
     }
 
     // Budget owed at EOF.
@@ -1273,6 +1347,14 @@ diff --git a/b.rs b/b.rs
             "diff_u_crlf",
             include_str!("../../../tests/fixtures/diff/diff_u_crlf_raw.txt"),
         ),
+        (
+            "git_diff_unmerged",
+            include_str!("../../../tests/fixtures/diff/git_diff_unmerged_raw.txt"),
+        ),
+        (
+            "git_format_patch_sha256",
+            include_str!("../../../tests/fixtures/diff/git_format_patch_sha256_raw.txt"),
+        ),
     ];
 
     /// Property (c): the raw-passthrough safety net fires on ZERO corpus
@@ -1507,6 +1589,82 @@ diff --git a/b.rs b/b.rs
     }
 
     #[test]
+    fn file_level_facts_survive_while_the_stream_condenses() {
+        // GNU `diff -r` interleaves `Only in <dir>: <file>` and standalone
+        // `Binary files X and Y differ` lines between file sections; both
+        // used to vanish silently whenever a sibling file condensed.
+        let fixture = include_str!("../../../tests/fixtures/diff/diff_ru_raw.txt");
+        let out = condense_unified_diff(fixture);
+        assert!(
+            out.contains("[file] b/newfile.txt (only in one side)"),
+            "Only-in fact vanished:\n{out}"
+        );
+        assert!(
+            out.contains("[file] img.bin (binary)"),
+            "standalone binary fact vanished:\n{out}"
+        );
+    }
+
+    #[test]
+    fn unmerged_paths_are_reported() {
+        // `git diff --ours` during a merge conflict opens with
+        // `* Unmerged path <file>` BEFORE any file header — the fact arm
+        // must fire in a plain stream's prologue.
+        let fixture = include_str!("../../../tests/fixtures/diff/git_diff_unmerged_raw.txt");
+        let out = condense_unified_diff(fixture);
+        assert!(
+            out.contains("[file] cfile.txt (unmerged)"),
+            "unmerged fact vanished:\n{out}"
+        );
+        assert!(
+            out.contains("[file] cfile.txt (+4 -0)"),
+            "conflict-marker section missing:\n{out}"
+        );
+    }
+
+    #[test]
+    fn submodule_log_headers_are_reported() {
+        // `git diff --submodule=log` emits a `Submodule <name> <a>..<b>`
+        // block whose indented body is prose; the header itself is a fact.
+        let fixture = include_str!("../../../tests/fixtures/diff/git_diff_submodule_raw.txt");
+        let out = condense_unified_diff(fixture);
+        assert!(
+            out.contains("[file] sub e139196..b0ac9b1 (rewind) (submodule)"),
+            "submodule fact vanished:\n{out}"
+        );
+    }
+
+    #[test]
+    fn sha256_format_patch_parses_with_64_hex_mbox_separator() {
+        // SHA-256 repos emit 64-hex `From` separators; without accepting
+        // them the whole stream fell back raw (the signature never earned
+        // its rule-7 tolerance).
+        let fixture =
+            include_str!("../../../tests/fixtures/diff/git_format_patch_sha256_raw.txt");
+        let out = condense_unified_diff(fixture);
+        assert_ne!(out, fixture, "sha256 format-patch fell back to raw");
+        assert!(out.contains("[file] f.txt (+1 -1)"), "got:\n{out}");
+        assert!(
+            !out.contains("- upper-case"),
+            "mbox prose bullet leaked:\n{out}"
+        );
+    }
+
+    #[test]
+    fn fact_lines_in_mbox_prose_stay_prose() {
+        // A commit message can start a column-0 line with `Only in ` or
+        // `Submodule `; inside an mbox message region those are prose, not
+        // facts (rule 6 suppression).
+        let diff = "From 0e7632a01b00c70cbc9dafcf1f23c71fa6b10de1 Mon Sep 17 00:00:00 2001\nSubject: [PATCH] x\n\nOnly in b: spurious.txt\nSubmodule notes 1..2 were rewritten\n---\ndiff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-x\n+y\n";
+        let out = condense_unified_diff(diff);
+        assert!(
+            !out.contains("spurious.txt") && !out.contains("submodule"),
+            "mbox prose promoted to fact entries:\n{out}"
+        );
+        assert!(out.contains("[file] f (+1 -1)"), "got:\n{out}");
+    }
+
+    #[test]
     fn signature_tolerance_requires_an_mbox_stream() {
         // A bare `--` leftover in a plain (non-mbox) stream is stale-budget
         // evidence, not a signature; only format-patch streams (which always
@@ -1708,12 +1866,15 @@ diff --git a/b.rs b/b.rs
     #[test]
     fn condensed_output_is_never_larger_than_input() {
         // This filter is a fidelity filter: it keeps every content line by
-        // design, so its savings come only from dropped metadata (~9% on real
-        // git output, measured on this corpus). The 60% floor in
-        // cli-testing.md is written for truncating filters and does not apply
-        // — see the fidelity-filter exemption discussion on the ticket. What
-        // must always hold: the output is never larger than the input (the
-        // `never_worse` guard's contract, verified here at the filter level).
+        // design, so its savings come only from dropped metadata. Measured on
+        // this corpus (metadata-heavy streams) that is 52-87% per fixture;
+        // on content-heavy single-file diffs it can fall to single digits
+        // (~4% on this branch's own self-diff). The 60% floor in
+        // cli-testing.md is therefore not guaranteed by construction — the
+        // fidelity-filter exemption is escalated on the ticket as a
+        // maintainer decision. What must always hold: the output is never
+        // larger than the input (the `never_worse` guard's contract,
+        // verified here at the filter level).
         for (name, fixture) in CORPUS {
             let out = condense_unified_diff(fixture);
             assert!(
