@@ -314,19 +314,38 @@ fn should_skip_vitest_arg(arg: &str) -> bool {
     arg == "run" || arg.starts_with("--json") || arg.starts_with("--watch")
 }
 
-/// Strip jest args that conflict with the injected `--no-watch --json`.
-/// `--reporters` is a yargs array flag: the space-separated form consumes
-/// every following non-flag token, so those values must be dropped with the
-/// flag — leaving them behind turns reporter names (`default`, ...) into
-/// positional test-name filters and jest silently runs the wrong test set.
-/// `--watch`/`--watchAll` are boolean and matched exactly, so value-carrying
-/// flags like `--watchPathIgnorePatterns` are forwarded intact.
+/// Strip jest args that conflict with the injected `--no-watch --json`,
+/// consuming exactly the tokens jest's own yargs parsing would bind to them:
+/// - `--reporters` and `--reporters=<v>` are greedy array flags: every
+///   following token up to the next `-`-prefixed one is a reporter value and
+///   is dropped with the flag — left behind, it becomes a positional
+///   test-name filter and jest silently runs the wrong test set.
+/// - `--reporter` (not a jest flag) binds at most one following non-flag
+///   token under yargs unknown-option rules; only that token is dropped.
+/// - `--reporter=<v>` binds no following token; only the flag is dropped.
+/// - `run`, `--json`, `--watch`, `--watchAll` (and their `=` forms) are
+///   boolean/bare and dropped alone; every other token — including
+///   value-carrying flags like `--watchPathIgnorePatterns` — is forwarded
+///   intact.
+/// - `--` and everything after it are forwarded verbatim: jest treats all
+///   following tokens as positionals, so no strip rule may apply to them.
 fn strip_jest_conflicting_args(args: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     let mut iter = args.iter().peekable();
     while let Some(arg) = iter.next() {
-        if arg == "--reporters" || arg == "--reporter" {
+        if arg == "--" {
+            out.push(arg.clone());
+            out.extend(iter.cloned());
+            break;
+        }
+        if arg == "--reporters" || arg.starts_with("--reporters=") {
             while iter.peek().is_some_and(|next| !next.starts_with('-')) {
+                iter.next();
+            }
+            continue;
+        }
+        if arg == "--reporter" {
+            if iter.peek().is_some_and(|next| !next.starts_with('-')) {
                 iter.next();
             }
             continue;
@@ -334,7 +353,6 @@ fn strip_jest_conflicting_args(args: &[String]) -> Vec<String> {
         if arg == "run"
             || arg == "--json"
             || arg.starts_with("--json=")
-            || arg.starts_with("--reporters=")
             || arg.starts_with("--reporter=")
             || arg == "--watch"
             || arg.starts_with("--watch=")
@@ -674,9 +692,46 @@ Scope: all 6 workspace projects
     }
 
     #[test]
-    fn test_strip_jest_reporters_equals_form() {
-        let result = strip_jest_conflicting_args(&args(&["--reporters=default", "sum.test.ts"]));
+    fn test_strip_jest_reporters_equals_form_is_greedy_too() {
+        // yargs array flags stay greedy in the equals form: jest binds
+        // `jest-junit` (and any following non-flag token) to --reporters,
+        // so forwarding it would turn it into a test-name filter.
+        let result = strip_jest_conflicting_args(&args(&[
+            "--reporters=default",
+            "jest-junit",
+            "--coverage",
+        ]));
+        assert_eq!(result, args(&["--coverage"]));
+    }
+
+    #[test]
+    fn test_strip_jest_singular_reporter_consumes_at_most_one_value() {
+        // --reporter is not a jest flag; yargs binds at most one value to an
+        // unknown option, so the test filter after it must survive.
+        let result =
+            strip_jest_conflicting_args(&args(&["--reporter", "default", "sum.test.ts"]));
         assert_eq!(result, args(&["sum.test.ts"]));
+    }
+
+    #[test]
+    fn test_strip_jest_singular_reporter_equals_form_binds_no_value() {
+        let result = strip_jest_conflicting_args(&args(&["--reporter=verbose", "sum.test.ts"]));
+        assert_eq!(result, args(&["sum.test.ts"]));
+    }
+
+    #[test]
+    fn test_strip_jest_reporters_stops_at_double_dash_terminator() {
+        let result =
+            strip_jest_conflicting_args(&args(&["--reporters", "default", "--", "sum.test.ts"]));
+        assert_eq!(result, args(&["--", "sum.test.ts"]));
+    }
+
+    #[test]
+    fn test_strip_jest_everything_after_double_dash_is_positional() {
+        // jest treats all tokens after `--` as positionals — even ones that
+        // look like strippable flags must be forwarded verbatim.
+        let result = strip_jest_conflicting_args(&args(&["--watch", "--", "run", "--json"]));
+        assert_eq!(result, args(&["--", "run", "--json"]));
     }
 
     #[test]
