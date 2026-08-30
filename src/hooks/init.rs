@@ -7,7 +7,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
-use crate::core::utils::strip_leading_bom;
+use crate::core::utils::{from_json_str, strip_leading_bom};
 use crate::hooks::constants::{
     CONFIG_DIR, COPILOT_HOME_ENV, COPILOT_HOOK_FILE, COPILOT_INSTRUCTIONS_FILE, COPILOT_USER_DIR,
     CURSOR_DIR, GEMINI_DIR, GITHUB_DIR, OPENCODE_PLUGIN_FILE, OPENCODE_SUBDIR, PLUGIN_SUBDIR,
@@ -614,7 +614,7 @@ fn remove_hook_from_settings(ctx: InitContext) -> Result<bool> {
         return Ok(false);
     }
 
-    let mut root: serde_json::Value = serde_json::from_str(content)
+    let mut root: serde_json::Value = from_json_str(content)
         .with_context(|| format!("Failed to parse {} as JSON", settings_path.display()))?;
 
     let removed = remove_hook_from_json(&mut root);
@@ -984,7 +984,7 @@ fn patch_settings_json_command(
         if content.trim().is_empty() {
             serde_json::json!({})
         } else {
-            serde_json::from_str(content)
+            from_json_str(content)
                 .with_context(|| format!("Failed to parse {} as JSON", settings_path.display()))?
         }
     } else {
@@ -1368,7 +1368,7 @@ fn remove_legacy_settings_entries(ctx: InitContext) -> Result<()> {
         return Ok(());
     }
 
-    let mut root: serde_json::Value = serde_json::from_str(content)
+    let mut root: serde_json::Value = from_json_str(content)
         .with_context(|| format!("Failed to parse {}", settings_path.display()))?;
 
     if !remove_legacy_hook_entries_from_json(&mut root) {
@@ -3022,7 +3022,7 @@ fn read_droid_json(path: &Path) -> Result<Option<serde_json::Value>> {
     if content.trim().is_empty() {
         return Ok(Some(serde_json::json!({})));
     }
-    serde_json::from_str(content)
+    from_json_str(content)
         .map(Some)
         .with_context(|| format!("Failed to parse {} as JSON", path.display()))
 }
@@ -3687,7 +3687,7 @@ fn patch_cursor_hooks_json(path: &Path, ctx: InitContext) -> Result<bool> {
         if content.trim().is_empty() {
             serde_json::json!({ "version": 1 })
         } else {
-            serde_json::from_str(content)
+            from_json_str(content)
                 .with_context(|| format!("Failed to parse {} as JSON", path.display()))?
         }
     } else {
@@ -3800,8 +3800,8 @@ fn remove_legacy_cursor_hooks_json_entries(path: &Path, ctx: InitContext) -> Res
         return Ok(());
     }
 
-    let mut root: serde_json::Value = serde_json::from_str(content)
-        .with_context(|| format!("Failed to parse {}", path.display()))?;
+    let mut root: serde_json::Value =
+        from_json_str(content).with_context(|| format!("Failed to parse {}", path.display()))?;
 
     if !remove_legacy_cursor_hook_entries_from_json(&mut root) {
         return Ok(());
@@ -3880,7 +3880,7 @@ fn remove_cursor_hooks(ctx: InitContext) -> Result<Vec<String>> {
         let content = strip_leading_bom(&content);
 
         if !content.trim().is_empty() {
-            if let Ok(mut root) = serde_json::from_str::<serde_json::Value>(content) {
+            if let Ok(mut root) = from_json_str::<serde_json::Value>(content) {
                 if remove_cursor_hook_from_json(&mut root) {
                     if dry_run {
                         println!(
@@ -3954,7 +3954,7 @@ fn show_claude_config() -> Result<()> {
     let settings_path = claude_dir.join(SETTINGS_JSON);
     let binary_hook_registered = if settings_path.exists() {
         let content = fs::read_to_string(&settings_path).unwrap_or_default();
-        if let Ok(root) = serde_json::from_str::<serde_json::Value>(strip_leading_bom(&content)) {
+        if let Ok(root) = from_json_str::<serde_json::Value>(&content) {
             hook_already_present(&root, CLAUDE_HOOK_COMMAND)
         } else {
             false
@@ -4076,7 +4076,7 @@ fn show_claude_config() -> Result<()> {
         let content = fs::read_to_string(&settings_path)?;
         let content = strip_leading_bom(&content);
         if !content.trim().is_empty() {
-            if let Ok(root) = serde_json::from_str::<serde_json::Value>(content) {
+            if let Ok(root) = from_json_str::<serde_json::Value>(content) {
                 if all_hook_matchers_present(&root, CLAUDE_HOOK_COMMAND) {
                     println!("[ok] settings.json: RTK hook configured");
                 } else if hook_already_present(&root, CLAUDE_HOOK_COMMAND) {
@@ -4126,8 +4126,7 @@ fn show_claude_config() -> Result<()> {
         // Check for binary command in hooks.json first
         let cursor_binary_registered = if cursor_hooks_json.exists() {
             let content = fs::read_to_string(&cursor_hooks_json).unwrap_or_default();
-            if let Ok(root) = serde_json::from_str::<serde_json::Value>(strip_leading_bom(&content))
-            {
+            if let Ok(root) = from_json_str::<serde_json::Value>(&content) {
                 cursor_hook_already_present(&root)
             } else {
                 false
@@ -4319,7 +4318,7 @@ pub fn run_gemini(
     }
 
     // 3. Patch ~/.gemini/settings.json
-    patch_gemini_settings(&gemini_dir, &hook_path, patch_mode, ctx)?;
+    let settings_parse_failed = patch_gemini_settings(&gemini_dir, &hook_path, patch_mode, ctx)?;
 
     if dry_run {
         print_dry_run_footer();
@@ -4329,18 +4328,37 @@ pub fn run_gemini(
         if !hook_only {
             println!("  GEMINI.md: {}", gemini_dir.join(GEMINI_MD).display());
         }
+        if settings_parse_failed {
+            println!("  settings.json: NOT patched (existing file could not be parsed; see warning above)");
+        }
         println!("  Restart Gemini CLI. Test with: git status\n");
     }
     Ok(())
 }
 
-/// Patch ~/.gemini/settings.json with the BeforeTool hook
+/// Print the manual-setup instructions for ~/.gemini/settings.json, shared by
+/// PatchMode::Skip and the unparseable-settings fallback in
+/// `patch_gemini_settings`.
+fn print_gemini_manual_setup(settings_path: &Path) {
+    println!(
+        "\nManual setup needed: add RTK hook to {}\n\
+         See: https://github.com/rtk-ai/rtk#gemini-cli",
+        settings_path.display()
+    );
+}
+
+/// Patch ~/.gemini/settings.json with the BeforeTool hook.
+///
+/// Returns `Ok(true)` when the existing settings.json could not be parsed
+/// (so the caller can tell an honest "hook installed, settings.json NOT
+/// patched" apart from every other reason nothing changed — already
+/// patched, `PatchMode::Skip`, declined at the `Ask` prompt, dry-run).
 fn patch_gemini_settings(
     gemini_dir: &Path,
     hook_path: &Path,
     patch_mode: PatchMode,
     ctx: InitContext,
-) -> Result<()> {
+) -> Result<bool> {
     let InitContext { verbose, dry_run } = ctx;
     let settings_path = gemini_dir.join(SETTINGS_JSON);
     let hook_cmd = hook_path.to_string_lossy().to_string();
@@ -4349,7 +4367,29 @@ fn patch_gemini_settings(
     let mut settings: serde_json::Value = if settings_path.exists() {
         let content = fs::read_to_string(&settings_path)
             .with_context(|| format!("Failed to read {}", settings_path.display()))?;
-        serde_json::from_str(strip_leading_bom(&content)).unwrap_or(serde_json::json!({}))
+        let content = strip_leading_bom(&content);
+
+        if content.trim().is_empty() {
+            serde_json::json!({})
+        } else {
+            match from_json_str(content) {
+                Ok(v) => v,
+                Err(e) => {
+                    // A parse failure must not abort the whole `rtk init` run
+                    // (run_gemini has already written the hook script,
+                    // GEMINI.md, and the integrity baseline by this point).
+                    // Treat it like PatchMode::Skip: warn, tell the user how
+                    // to patch it themselves, and leave the file untouched.
+                    eprintln!(
+                        "Warning: failed to parse {} as JSON: {}",
+                        settings_path.display(),
+                        e
+                    );
+                    print_gemini_manual_setup(&settings_path);
+                    return Ok(true);
+                }
+            }
+        }
     } else {
         serde_json::json!({})
     };
@@ -4365,19 +4405,15 @@ fn patch_gemini_settings(
                 if verbose > 0 {
                     eprintln!("Gemini settings.json already has RTK hook");
                 }
-                return Ok(());
+                return Ok(false);
             }
         }
     }
 
     // Ask user before patching
     if patch_mode == PatchMode::Skip {
-        println!(
-            "\nManual setup needed: add RTK hook to {}\n\
-             See: https://github.com/rtk-ai/rtk#gemini-cli",
-            settings_path.display()
-        );
-        return Ok(());
+        print_gemini_manual_setup(&settings_path);
+        return Ok(false);
     }
 
     if patch_mode == PatchMode::Ask {
@@ -4393,7 +4429,7 @@ fn patch_gemini_settings(
             std::io::stdin().read_line(&mut answer)?;
             if !answer.trim().eq_ignore_ascii_case("y") {
                 println!("Skipped. Add hook manually later.");
-                return Ok(());
+                return Ok(false);
             }
         }
     }
@@ -4435,7 +4471,7 @@ fn patch_gemini_settings(
         if verbose > 0 {
             println!("[dry-run] content:\n{}", content);
         }
-        return Ok(());
+        return Ok(false);
     }
 
     // Write atomically
@@ -4448,7 +4484,7 @@ fn patch_gemini_settings(
         eprintln!("Patched {}", settings_path.display());
     }
 
-    Ok(())
+    Ok(false)
 }
 
 /// Remove Gemini artifacts during uninstall
@@ -4491,9 +4527,7 @@ fn uninstall_gemini(ctx: InitContext) -> Result<Vec<String>> {
     let settings_path = gemini_dir.join(SETTINGS_JSON);
     if settings_path.exists() {
         let content = fs::read_to_string(&settings_path)?;
-        if let Ok(mut settings) =
-            serde_json::from_str::<serde_json::Value>(strip_leading_bom(&content))
-        {
+        if let Ok(mut settings) = from_json_str::<serde_json::Value>(&content) {
             let bt_pointer = format!("/hooks/{}", BEFORE_TOOL_KEY);
             if let Some(arr) = settings
                 .pointer_mut(&bt_pointer)
@@ -7503,6 +7537,43 @@ mod tests {
                 result.err()
             );
         });
+    }
+
+    #[test]
+    fn test_patch_gemini_settings_malformed_json_warns_without_overwriting() {
+        // A parse failure (not a BOM) must not abort `rtk init` — by the time
+        // patch_gemini_settings runs, run_gemini has already written the hook
+        // script, GEMINI.md, and the integrity baseline, so aborting here
+        // would leave a half-installed state with no summary. Treat it like
+        // PatchMode::Skip: warn and continue, and critically still never
+        // overwrite the unparsed file. Unlike Skip (and every other
+        // non-patch outcome), this path returns Ok(true) so run_gemini's
+        // final summary can honestly say settings.json was NOT patched
+        // instead of implying full success.
+        let tmp = TempDir::new().unwrap();
+        let gemini_dir = tmp.path().join(".gemini");
+        fs::create_dir_all(&gemini_dir).unwrap();
+        let settings_path = gemini_dir.join(SETTINGS_JSON);
+        let original = "{\"model\": \"foo\", \"mcpServers\": {},"; // trailing comma
+        fs::write(&settings_path, original).unwrap();
+
+        let result = patch_gemini_settings(
+            &gemini_dir,
+            Path::new("/fake/hook/path"),
+            PatchMode::Auto,
+            InitContext::default(),
+        );
+
+        assert!(
+            result.unwrap(),
+            "parse failure must be signaled so the summary can say settings.json was NOT patched"
+        );
+
+        let content = fs::read_to_string(&settings_path).unwrap();
+        assert_eq!(
+            content, original,
+            "settings.json must not be overwritten when parsing fails"
+        );
     }
 
     #[test]

@@ -81,7 +81,8 @@ pub fn run(path: &Path, verbose: u8) -> Result<()> {
 }
 
 fn summarize_cargo_str(path: &Path) -> Result<String> {
-    let content = fs::read_to_string(path)?;
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
     let dep_re =
         Regex::new(r#"^([a-zA-Z0-9_-]+)\s*=\s*(?:"([^"]+)"|.*version\s*=\s*"([^"]+)")"#).unwrap();
     let section_re = Regex::new(r"^\[([^\]]+)\]").unwrap();
@@ -136,9 +137,8 @@ fn summarize_cargo_str(path: &Path) -> Result<String> {
 fn summarize_package_json_str(path: &Path) -> Result<String> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("Failed to read {}", path.display()))?;
-    let json: serde_json::Value =
-        serde_json::from_str(crate::core::utils::strip_leading_bom(&content))
-            .with_context(|| format!("Failed to parse {}", path.display()))?;
+    let json: serde_json::Value = crate::core::utils::from_json_str(&content)
+        .with_context(|| format!("Failed to parse {}", path.display()))?;
     let mut out = String::new();
 
     if let Some(name) = json.get("name").and_then(|v| v.as_str()) {
@@ -173,7 +173,8 @@ fn summarize_package_json_str(path: &Path) -> Result<String> {
 }
 
 fn summarize_requirements_str(path: &Path) -> Result<String> {
-    let content = fs::read_to_string(path)?;
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
     let dep_re = Regex::new(r"^([a-zA-Z0-9_-]+)([=<>!~]+.*)?$").unwrap();
     let mut deps = Vec::new();
     let mut out = String::new();
@@ -201,7 +202,8 @@ fn summarize_requirements_str(path: &Path) -> Result<String> {
 }
 
 fn summarize_pyproject_str(path: &Path) -> Result<String> {
-    let content = fs::read_to_string(path)?;
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
     let mut in_deps = false;
     let mut deps = Vec::new();
     let mut out = String::new();
@@ -237,7 +239,8 @@ fn summarize_pyproject_str(path: &Path) -> Result<String> {
 }
 
 fn summarize_gomod_str(path: &Path) -> Result<String> {
-    let content = fs::read_to_string(path)?;
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
     let mut module_name = String::new();
     let mut go_version = String::new();
     let mut deps = Vec::new();

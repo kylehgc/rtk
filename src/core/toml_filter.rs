@@ -274,6 +274,7 @@ const RUST_HANDLED_COMMANDS: &[&str] = &[
     "wc",
     "gain",
     "config",
+    "ctest",
     "vitest",
     "prisma",
     "tsc",
