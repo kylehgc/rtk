@@ -369,9 +369,8 @@ fn condense_unified_diff(diff: &str) -> String {
             if line.starts_with("+++ ") {
                 if !current_file.is_empty() && (added > 0 || removed > 0) {
                     result.push(format!("[file] {} (+{} -{})", current_file, added, removed));
-                    for c in &changes {
-                        result.push(format!("  {}", c));
-                    }
+                    // Column 0: anchored greps (`^[+-]`) must match these.
+                    result.append(&mut changes);
                     let total = added + removed;
                     if total > 10 {
                         result.push(format!("  ... +{} more", total - 10));
@@ -397,9 +396,8 @@ fn condense_unified_diff(diff: &str) -> String {
     // Last file
     if !current_file.is_empty() && (added > 0 || removed > 0) {
         result.push(format!("[file] {} (+{} -{})", current_file, added, removed));
-        for c in &changes {
-            result.push(format!("  {}", c));
-        }
+        // Column 0: anchored greps (`^[+-]`) must match these.
+        result.append(&mut changes);
         let total = added + removed;
         if total > 10 {
             result.push(format!("  ... +{} more", total - 10));
@@ -770,6 +768,36 @@ diff --git a/b.rs b/b.rs
         let result = condense_unified_diff(diff);
         assert!(result.contains("a.rs"));
         assert!(result.contains("b.rs"));
+    }
+
+    #[test]
+    fn test_condense_unified_diff_markers_at_column_0() {
+        // Same silent-false-negative class as compact_diff (#118 / upstream
+        // #3646): indented markers make anchored greps (`^[+-]`) match nothing.
+        //
+        // Two files on purpose. A file's changes are flushed at two separate
+        // sites: once per `+++` for the preceding file, once after the loop for
+        // the last one. A single-file fixture only ever reaches the second, so
+        // the first could be reverted with the whole suite still green.
+        let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-fn old() {}\n+fn new() {}\ndiff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-let x = 1;\n+let x = 2;\n";
+        let result = condense_unified_diff(diff);
+        for want in ["-fn old() {}", "+fn new() {}", "-let x = 1;", "+let x = 2;"] {
+            assert!(
+                result.lines().any(|l| l == want),
+                "missing {want:?} at column 0 in:\n{}",
+                result
+            );
+        }
+        // Scoped to change lines: the `  ... +N more` trailer is legitimately
+        // indented, so a blanket "no line starts with a space" would be false
+        // for any diff with more than ten changes.
+        assert!(
+            !result
+                .lines()
+                .any(|l| l.starts_with(" +") || l.starts_with(" -")),
+            "change lines must not be indented:\n{}",
+            result
+        );
     }
 
     #[test]
