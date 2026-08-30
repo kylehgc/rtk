@@ -284,14 +284,18 @@ fn decide_from_verdict(cmd: &str, verdict: PermissionVerdict) -> HookDecision {
     match get_rewritten(cmd) {
         Some(r) if verdict == PermissionVerdict::Allow => HookDecision::AllowRewrite(r),
         Some(r) => HookDecision::AskRewrite(r),
-        // No text to rewrite — most commonly because `cmd` is already in
-        // `rtk …` form (Claude issued it directly after seeing it once).
-        // `verdict` was computed with #3152's already-rtk-aware matching,
-        // so an Allow here is real: assert it instead of silently
-        // deferring to the host's native check, which won't recognize the
-        // rewritten form either and would prompt for something the user
-        // already allowlisted.
-        None if verdict == PermissionVerdict::Allow => HookDecision::AllowRewrite(cmd.to_string()),
+        // No text to rewrite and `cmd` is already in `rtk …` form (Claude
+        // issued it directly after seeing the rewrite once). `verdict` was
+        // computed with #3152's already-rtk-aware matching, so an Allow
+        // here is real: assert it instead of silently deferring to the
+        // host's native check, which won't recognize the rewritten form
+        // and would prompt for something the user already allowlisted.
+        // Unrewritable commands WITHOUT an rtk prefix still defer: the
+        // host's native matcher evaluates their raw text itself, and its
+        // stricter pattern semantics must stay authoritative there.
+        None if verdict == PermissionVerdict::Allow && contains_already_rtk_segment(cmd) => {
+            HookDecision::AllowRewrite(cmd.to_string())
+        }
         None => HookDecision::Defer,
     }
 }
@@ -367,6 +371,14 @@ fn copilot_ide_response_from_decision(decision: HookDecision, cmd: &str) -> Opti
             "Blocked by RTK permission rule".to_string()
         }
         HookDecision::AllowRewrite(rewritten) | HookDecision::AskRewrite(rewritten) => {
+            // An already-rtk Allow (#3152) carries the command unchanged:
+            // there is no different command to suggest, and this renderer
+            // can only answer with a deny — a deny that says "re-run as
+            // `cmd`" would loop forever. Stay silent so Copilot's native
+            // flow proceeds, exactly as it did before #3152.
+            if rewritten == cmd {
+                return None;
+            }
             audit_log("rewrite", cmd, &rewritten);
             format!("RTK token optimization: re-run this command as `{rewritten}` instead.")
         }
@@ -664,19 +676,23 @@ fn claude_payload_input(v: &Value) -> Option<(&Value, &str)> {
 fn contains_already_rtk_segment(cmd: &str) -> bool {
     crate::discover::lexer::split_for_permissions(cmd)
         .iter()
-        .any(|segment| {
-            let segment = segment.trim();
-            segment == "rtk" || segment.starts_with("rtk ")
-        })
+        .any(|segment| permissions::is_rtk_prefixed(segment.trim()))
 }
 
 fn process_claude_payload(v: &Value) -> PayloadAction {
+    process_claude_payload_impl(v, |cmd| decide_hook_action(cmd, permissions::Host::Claude))
+}
+
+/// Same flow as `process_claude_payload` with the permission decision
+/// injectable — lets tests drive the full payload path (including the
+/// `PayloadAction::Deny` rendering) without reading on-disk settings.
+fn process_claude_payload_impl(v: &Value, decide: impl Fn(&str) -> HookDecision) -> PayloadAction {
     let (input, cmd) = match claude_payload_input(v) {
         Some((input, cmd)) => (input, cmd),
         None => return PayloadAction::Ignore,
     };
 
-    let (rewritten, allow) = match decide_hook_action(cmd, permissions::Host::Claude) {
+    let (rewritten, allow) = match decide(cmd) {
         HookDecision::Deny => {
             if contains_already_rtk_segment(cmd) {
                 let output = json!({
@@ -2081,6 +2097,146 @@ mod tests {
             decide_with_rules("rtk ls -la", &[], &[], &allow),
             HookDecision::Defer
         ));
+    }
+
+    // --- Fork amendments to #3195 ---
+
+    #[test]
+    fn test_decide_defer_for_unrewritable_non_rtk_command() {
+        // The Allow-assert is gated to already-rtk commands. An unrewritable
+        // command without an rtk prefix must defer even when RTK's own allow
+        // matched: the host's native matcher evaluates its raw text itself,
+        // and RTK's more prefix-permissive semantics must not override it.
+        let allow = vec!["htop".to_string(), "htop *".to_string()];
+        assert!(matches!(
+            decide_with_rules("htop", &[], &[], &allow),
+            HookDecision::Defer
+        ));
+    }
+
+    #[test]
+    fn test_decide_ask_rule_for_already_rtk_command_defers() {
+        // Ask + nothing to rewrite → Defer; the host prompts either way, and
+        // RTK asserts nothing it doesn't have to.
+        let ask = vec!["git push".to_string()];
+        assert!(matches!(
+            decide_with_rules("rtk git push origin main", &[], &ask, &[]),
+            HookDecision::Defer
+        ));
+    }
+
+    #[test]
+    fn test_copilot_ide_already_rtk_allow_stays_silent() {
+        // AllowRewrite carrying the command unchanged (already-rtk allow) has
+        // no different command to suggest; this renderer can only answer with
+        // a deny, and "re-run this as the same command" would deny-loop the
+        // agent forever. Must stay silent.
+        assert!(copilot_ide_response_from_decision(
+            HookDecision::AllowRewrite("rtk grep foo".to_string()),
+            "rtk grep foo"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn test_vscode_already_rtk_allow_asserted_with_command_unchanged() {
+        let r = vscode_response_from_decision(
+            HookDecision::AllowRewrite("rtk grep foo".to_string()),
+            "rtk grep foo",
+        )
+        .expect("vscode must render an allow response");
+        assert_eq!(
+            r.pointer("/hookSpecificOutput/permissionDecision")
+                .and_then(Value::as_str),
+            Some("allow")
+        );
+        assert_eq!(
+            r.pointer("/hookSpecificOutput/updatedInput/command")
+                .and_then(Value::as_str),
+            Some("rtk grep foo")
+        );
+    }
+
+    #[test]
+    fn test_copilot_cli_already_rtk_allow_asserted_with_command_unchanged() {
+        let args = json!({"command": "rtk grep foo"});
+        let r = copilot_cli_response_from_decision(
+            &args,
+            HookDecision::AllowRewrite("rtk grep foo".to_string()),
+            "rtk grep foo",
+        )
+        .expect("copilot cli must render an allow response");
+        assert_eq!(
+            r.pointer("/permissionDecision").and_then(Value::as_str),
+            Some("allow")
+        );
+        assert_eq!(
+            r.pointer("/modifiedArgs/command").and_then(Value::as_str),
+            Some("rtk grep foo")
+        );
+    }
+
+    #[test]
+    fn test_cursor_already_rtk_allow_asserted_with_command_unchanged() {
+        let allow = vec!["grep *".to_string()];
+        let input = json!({"tool_input": {"command": "rtk grep foo"}}).to_string();
+        let out = run_cursor_inner_with_rules(&input, &[], &[], &allow);
+        let v: Value = serde_json::from_str(&out).expect("cursor output must be JSON");
+        assert_eq!(
+            v.pointer("/permission").and_then(Value::as_str),
+            Some("allow")
+        );
+        assert_eq!(
+            v.pointer("/updated_input/command").and_then(Value::as_str),
+            Some("rtk grep foo")
+        );
+    }
+
+    #[test]
+    fn test_claude_payload_asserts_deny_for_already_rtk_command() {
+        // End to end through the payload path: an already-rtk deny match must
+        // render an explicit permissionDecision: "deny", not a silent skip.
+        let deny = vec!["rm:*".to_string()];
+        let input = json!({"tool_name": "Bash", "tool_input": {"command": "rtk rm -rf /tmp/x"}});
+        let action = process_claude_payload_impl(&input, |cmd| {
+            decide_from_verdict(
+                cmd,
+                permissions::check_command_with_rules(cmd, &deny, &[], &[]),
+            )
+        });
+        match action {
+            PayloadAction::Deny { cmd, output } => {
+                assert_eq!(cmd, "rtk rm -rf /tmp/x");
+                assert_eq!(
+                    output
+                        .pointer("/hookSpecificOutput/permissionDecision")
+                        .and_then(Value::as_str),
+                    Some("deny")
+                );
+            }
+            _ => panic!("expected PayloadAction::Deny"),
+        }
+    }
+
+    #[test]
+    fn test_claude_payload_original_form_deny_stays_skip() {
+        // The non-rtk deny path must keep deferring to the host's native
+        // check (silent skip), byte-for-byte as before #3152.
+        let deny = vec!["rm:*".to_string()];
+        let input = json!({"tool_name": "Bash", "tool_input": {"command": "rm -rf /tmp/x"}});
+        let action = process_claude_payload_impl(&input, |cmd| {
+            decide_from_verdict(
+                cmd,
+                permissions::check_command_with_rules(cmd, &deny, &[], &[]),
+            )
+        });
+        match action {
+            PayloadAction::Skip { reason, cmd } => {
+                assert_eq!(reason, "skip:deny_rule");
+                assert_eq!(cmd, "rm -rf /tmp/x");
+            }
+            _ => panic!("expected PayloadAction::Skip"),
+        }
     }
 
     // --- Gemini rendering ---
