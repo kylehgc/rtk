@@ -298,6 +298,15 @@ fn decide_from_verdict(cmd: &str, verdict: PermissionVerdict) -> HookDecision {
         None if verdict == PermissionVerdict::Allow && all_segments_already_rtk(cmd) => {
             HookDecision::AllowRewrite(cmd.to_string())
         }
+        // Same alias-blindness applies to Ask: were this a silent defer, a
+        // host-native `Bash(rtk:*)` allowlist would auto-run a command the
+        // user marked ask. Hand the unchanged command through the Ask path
+        // — the Claude renderer asserts "ask" (bypassPermissions-gated),
+        // and renderers with no ask channel degrade to their pre-existing
+        // rewrite-without-decision behavior.
+        None if verdict == PermissionVerdict::Ask && all_segments_already_rtk(cmd) => {
+            HookDecision::AskRewrite(cmd.to_string())
+        }
         None => HookDecision::Defer,
     }
 }
@@ -2181,14 +2190,55 @@ mod tests {
     }
 
     #[test]
-    fn test_decide_ask_rule_for_already_rtk_command_defers() {
-        // Ask + nothing to rewrite → Defer; the host prompts either way, and
-        // RTK asserts nothing it doesn't have to.
+    fn test_decide_ask_rule_for_already_rtk_command_asserts_ask() {
+        // A silent defer here would let a host-native `Bash(rtk:*)`
+        // allowlist auto-run a command the user marked ask — the same
+        // alias-blindness #3152 closes for deny/allow.
         let ask = vec!["git push".to_string()];
+        match decide_with_rules("rtk git push origin main", &[], &ask, &[]) {
+            HookDecision::AskRewrite(r) => assert_eq!(r, "rtk git push origin main"),
+            other => panic!("expected AskRewrite(cmd unchanged), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_decide_deny_sees_through_command_wrappers() {
+        // `rtk proxy <cmd>` executes <cmd> raw; err/test/summary execute it
+        // filtered. A deny against the wrapped tool must fire even when the
+        // rtk form itself is allowlisted.
+        let deny = vec!["rm:*".to_string()];
+        let allow = vec!["rtk:*".to_string()];
+        for cmd in [
+            "rtk proxy rm -rf /",
+            "rtk err rm -rf /",
+            "rtk test rm -rf /",
+            "rtk summary rm -rf /",
+            "rtk rtk proxy rm -rf /",
+        ] {
+            assert!(
+                matches!(
+                    decide_with_rules(cmd, &deny, &[], &allow),
+                    HookDecision::Deny
+                ),
+                "{cmd} must be denied, not allow-asserted"
+            );
+        }
+    }
+
+    #[test]
+    fn test_probe_shapes_fail_safe() {
+        // Shapes that must never reach the already-rtk assert paths: each
+        // stays out of the gates so the host's native matcher (or its
+        // prompt) remains authoritative.
+        let allow = vec!["*".to_string()];
         assert!(matches!(
-            decide_with_rules("rtk git push origin main", &[], &ask, &[]),
+            decide_with_rules("$(rtk rm -rf /)", &[], &[], &allow),
             HookDecision::Defer
         ));
+        assert!(!all_segments_already_rtk("FOO=1 rtk rm -rf /"));
+        assert!(!all_segments_already_rtk("'rtk' rm -rf /"));
+        assert!(!contains_already_rtk_segment("'rtk' rm -rf /"));
+        assert!(!contains_already_rtk_segment("FOO=1 rtk rm -rf /"));
     }
 
     #[test]

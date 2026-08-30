@@ -388,31 +388,52 @@ pub(crate) fn extract_bash_pattern(rule: &str) -> &str {
 /// Normalizing here — right before matching — keeps the deny/ask/allow
 /// checks meaningful regardless of which form the command arrives in.
 ///
-/// Contract: a leading `rtk` token followed by at least one whitespace
-/// character and more text is removed, repeatedly (`rtk rtk grep x` →
-/// `grep x`, `rtk\tgrep x` → `grep x`); bare `rtk` and segments whose
-/// first token merely starts with `rtk` (`rtkinit --help`) are returned
-/// unchanged. Matching runs against BOTH the raw and the normalized form
-/// (see [`segment_matches`]), so rules written against `rtk` itself keep
-/// applying too.
+/// Contract: a leading `rtk` token followed by at least one ASCII IFS
+/// whitespace character and more text is removed, repeatedly
+/// (`rtk rtk grep x` → `grep x`, `rtk\tgrep x` → `grep x`); after each
+/// removed `rtk`, one wrapper verb from [`COMMAND_WRAPPERS`] is removed
+/// the same way (`rtk proxy rm -rf /` → `rm -rf /`). Bare `rtk` and
+/// segments whose first token merely starts with `rtk` (`rtkinit --help`)
+/// are returned unchanged. Matching runs against BOTH the raw and the
+/// normalized form (see [`segment_matches`]), so rules written against
+/// `rtk` itself keep applying too.
 pub(crate) fn normalize_for_matching(segment: &str) -> &str {
     let mut s = segment;
     loop {
-        let Some(rest) = s.strip_prefix("rtk") else {
+        let Some(after_rtk) = strip_token(s, "rtk") else {
             return s;
         };
-        // ASCII IFS whitespace only: the shell word-splits on space/tab
-        // (newlines are already segment boundaries in the lexer). Unicode
-        // whitespace like NBSP glues into one word the shell can't execute,
-        // so stripping across it would normalize text the shell never runs.
-        let stripped = rest.trim_start_matches([' ', '\t', '\r', '\n']);
-        // Reject bare `rtk` (nothing follows) and non-token look-alikes
-        // like `rtkinit` (no whitespace boundary after `rtk`).
-        if stripped.is_empty() || stripped.len() == rest.len() {
-            return s;
-        }
-        s = stripped;
+        s = COMMAND_WRAPPERS
+            .iter()
+            .find_map(|wrapper| strip_token(after_rtk, wrapper))
+            .unwrap_or(after_rtk);
     }
+}
+
+/// RTK subcommands whose trailing arguments are themselves the executed
+/// command: `rtk proxy <cmd>` runs `<cmd>` raw; `rtk err <cmd>`,
+/// `rtk test <cmd>`, and `rtk summary <cmd>` run `<cmd>` and filter its
+/// output. For permission matching the effective command is the wrapped
+/// one, so a `Bash(rm:*)` deny must see through `rtk proxy rm -rf /`.
+/// This list is exhaustive over `main.rs`'s `Commands` enum: every other
+/// variant either proxies the tool it is named after (`rtk grep …` IS
+/// `grep …`) or never executes its argument (`rtk check`, `rtk rewrite`).
+const COMMAND_WRAPPERS: [&str; 4] = ["proxy", "err", "test", "summary"];
+
+/// Strips `token` from the start of `s` when it is followed by at least
+/// one ASCII IFS whitespace character (space, tab, CR, LF) and more text;
+/// returns `None` for a bare token, a longer word sharing the prefix, or
+/// no prefix at all. ASCII IFS only: the shell word-splits on it, while
+/// unicode whitespace like NBSP glues into one word the shell cannot
+/// execute — stripping across it would normalize text the shell never
+/// runs.
+fn strip_token<'a>(s: &'a str, token: &str) -> Option<&'a str> {
+    let rest = s.strip_prefix(token)?;
+    let stripped = rest.trim_start_matches([' ', '\t', '\r', '\n']);
+    if stripped.is_empty() || stripped.len() == rest.len() {
+        return None;
+    }
+    Some(stripped)
 }
 
 /// True when `segment` is an `rtk …` invocation or bare `rtk` — i.e. text
@@ -1280,6 +1301,32 @@ mod tests {
         assert_eq!(
             normalize_for_matching("rtk\u{A0}grep foo"),
             "rtk\u{A0}grep foo"
+        );
+        // Command wrappers: the executed command is the wrapped one.
+        assert_eq!(normalize_for_matching("rtk proxy rm -rf /"), "rm -rf /");
+        assert_eq!(
+            normalize_for_matching("rtk err npm run build"),
+            "npm run build"
+        );
+        assert_eq!(normalize_for_matching("rtk test cargo test"), "cargo test");
+        assert_eq!(normalize_for_matching("rtk summary make all"), "make all");
+        assert_eq!(normalize_for_matching("rtk rtk proxy rm -rf /"), "rm -rf /");
+        // Wrapper verbs only count directly after an `rtk` token, as whole
+        // tokens, and only when a command follows.
+        assert_eq!(normalize_for_matching("proxy rm -rf /"), "proxy rm -rf /");
+        assert_eq!(normalize_for_matching("rtk proxyfoo bar"), "proxyfoo bar");
+        assert_eq!(normalize_for_matching("rtk proxy"), "proxy");
+    }
+
+    #[test]
+    fn test_wrapped_command_deny_rule_fires() {
+        // Security half of the wrapper strip: a deny against the wrapped
+        // tool must fire even when the rtk form itself is allowlisted.
+        let deny = vec!["rm:*".to_string()];
+        let allow = vec!["rtk:*".to_string()];
+        assert_eq!(
+            check_command_with_rules("rtk proxy rm -rf /", &deny, &[], &allow),
+            PermissionVerdict::Deny
         );
     }
 
