@@ -284,16 +284,18 @@ fn decide_from_verdict(cmd: &str, verdict: PermissionVerdict) -> HookDecision {
     match get_rewritten(cmd) {
         Some(r) if verdict == PermissionVerdict::Allow => HookDecision::AllowRewrite(r),
         Some(r) => HookDecision::AskRewrite(r),
-        // No text to rewrite and `cmd` is already in `rtk …` form (Claude
-        // issued it directly after seeing the rewrite once). `verdict` was
-        // computed with #3152's already-rtk-aware matching, so an Allow
-        // here is real: assert it instead of silently deferring to the
-        // host's native check, which won't recognize the rewritten form
-        // and would prompt for something the user already allowlisted.
-        // Unrewritable commands WITHOUT an rtk prefix still defer: the
-        // host's native matcher evaluates their raw text itself, and its
-        // stricter pattern semantics must stay authoritative there.
-        None if verdict == PermissionVerdict::Allow && contains_already_rtk_segment(cmd) => {
+        // No text to rewrite and EVERY segment of `cmd` is already in
+        // `rtk …` form (Claude issued it directly after seeing the rewrite
+        // once). `verdict` was computed with #3152's already-rtk-aware
+        // matching, so an Allow here is real: assert it instead of silently
+        // deferring to the host's native check, which won't recognize the
+        // rewritten form and would prompt for something the user already
+        // allowlisted. Any command containing a segment WITHOUT an rtk
+        // prefix still defers: the host's native matcher evaluates that raw
+        // text itself, and its stricter pattern semantics must stay
+        // authoritative there (RTK's matcher treats a bare rule as a prefix
+        // match; the host's requires `:*` for that).
+        None if verdict == PermissionVerdict::Allow && all_segments_already_rtk(cmd) => {
             HookDecision::AllowRewrite(cmd.to_string())
         }
         None => HookDecision::Defer,
@@ -673,10 +675,40 @@ fn claude_payload_input(v: &Value) -> Option<(&Value, &str)> {
 /// or must be asserted explicitly (the host's native check evaluates the
 /// raw text unchanged and has no concept of `rtk` as an alias for the
 /// underlying tool). See #3152.
+/// The two already-rtk gates deliberately use OPPOSITE quantifiers:
+///
+/// - Deny gate (`contains_already_rtk_segment`, any-segment): ONE rtk
+///   segment is enough to make the host's native deny check unreliable for
+///   the compound, and over-asserting a deny is fail-safe.
+/// - Allow gate (`all_segments_already_rtk`, every-segment): asserting
+///   allow speaks for the WHOLE compound, so every segment must be one the
+///   host's native matcher couldn't have evaluated itself — otherwise
+///   RTK's laxer pattern semantics would override the host's stricter ones
+///   for raw text (see `test_decide_defer_for_mixed_rtk_and_raw_compound`).
+///
+/// Do not unify them.
 fn contains_already_rtk_segment(cmd: &str) -> bool {
     crate::discover::lexer::split_for_permissions(cmd)
         .iter()
         .any(|segment| permissions::is_rtk_prefixed(segment.trim()))
+}
+
+/// True when `cmd` has at least one non-empty segment and every non-empty
+/// segment is rtk-prefixed. See the quantifier note above.
+fn all_segments_already_rtk(cmd: &str) -> bool {
+    let segments = crate::discover::lexer::split_for_permissions(cmd);
+    let mut saw_segment = false;
+    for segment in &segments {
+        let segment = segment.trim();
+        if segment.is_empty() {
+            continue;
+        }
+        if !permissions::is_rtk_prefixed(segment) {
+            return false;
+        }
+        saw_segment = true;
+    }
+    saw_segment
 }
 
 fn process_claude_payload(v: &Value) -> PayloadAction {
@@ -2115,6 +2147,40 @@ mod tests {
     }
 
     #[test]
+    fn test_decide_defer_for_mixed_rtk_and_raw_compound() {
+        // Asserting allow speaks for the whole compound. RTK's matcher
+        // treats the bare rule "shutdown" as a prefix match, where the
+        // host's native matcher requires ":*" — so a compound mixing an
+        // rtk segment with a raw one must defer, or the raw segment runs
+        // under RTK's laxer semantics un-prompted.
+        let allow = vec!["grep *".to_string(), "shutdown".to_string()];
+        for cmd in [
+            "rtk grep foo && shutdown now",
+            "rtk grep foo\nshutdown now",
+            "shutdown now && rtk grep foo",
+        ] {
+            assert!(
+                matches!(
+                    decide_with_rules(cmd, &[], &[], &allow),
+                    HookDecision::Defer
+                ),
+                "{cmd} must defer to the host's native matcher"
+            );
+        }
+    }
+
+    #[test]
+    fn test_decide_allow_for_all_rtk_compound() {
+        // Every segment already-rtk and every segment allowlisted → the
+        // assert is safe and must fire for the whole compound.
+        let allow = vec!["grep *".to_string(), "ls *".to_string()];
+        match decide_with_rules("rtk grep foo && rtk ls -la", &[], &[], &allow) {
+            HookDecision::AllowRewrite(r) => assert_eq!(r, "rtk grep foo && rtk ls -la"),
+            other => panic!("expected AllowRewrite(cmd unchanged), got {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_decide_ask_rule_for_already_rtk_command_defers() {
         // Ask + nothing to rewrite → Defer; the host prompts either way, and
         // RTK asserts nothing it doesn't have to.
@@ -2190,6 +2256,45 @@ mod tests {
             v.pointer("/updated_input/command").and_then(Value::as_str),
             Some("rtk grep foo")
         );
+    }
+
+    #[test]
+    fn test_gemini_already_rtk_allow_asserted_with_command_unchanged() {
+        let allow = vec!["grep *".to_string()];
+        let input = json!({
+            "tool_name": "run_shell_command",
+            "tool_input": {"command": "rtk grep foo"}
+        })
+        .to_string();
+        let out =
+            run_gemini_inner_with_rules(&input, &[], &[], &allow).expect("gemini input must parse");
+        let v: Value = serde_json::from_str(&out).expect("gemini output must be JSON");
+        assert_eq!(
+            v.pointer("/decision").and_then(Value::as_str),
+            Some("allow")
+        );
+    }
+
+    #[test]
+    fn test_droid_renderer_with_command_unchanged_is_noop_rewrite() {
+        // Unreachable in production (Droid rules are deny-only, so an Allow
+        // verdict cannot arise there) — pins the renderer contract in case
+        // Droid rule loading ever grows an allow channel.
+        let payload = json!({"tool_name": "Execute", "tool_input": {"command": "rtk grep foo"}});
+        let r = droid_response_from_decision(
+            &payload,
+            "rtk grep foo",
+            HookDecision::AllowRewrite("rtk grep foo".to_string()),
+        )
+        .expect("droid renders its rewrite envelope");
+        assert_eq!(
+            r.pointer("/hookSpecificOutput/updatedInput/command")
+                .and_then(Value::as_str),
+            Some("rtk grep foo")
+        );
+        assert!(r
+            .pointer("/hookSpecificOutput/permissionDecision")
+            .is_none());
     }
 
     #[test]

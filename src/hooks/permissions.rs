@@ -401,7 +401,11 @@ pub(crate) fn normalize_for_matching(segment: &str) -> &str {
         let Some(rest) = s.strip_prefix("rtk") else {
             return s;
         };
-        let stripped = rest.trim_start();
+        // ASCII IFS whitespace only: the shell word-splits on space/tab
+        // (newlines are already segment boundaries in the lexer). Unicode
+        // whitespace like NBSP glues into one word the shell can't execute,
+        // so stripping across it would normalize text the shell never runs.
+        let stripped = rest.trim_start_matches([' ', '\t', '\r', '\n']);
         // Reject bare `rtk` (nothing follows) and non-token look-alikes
         // like `rtkinit` (no whitespace boundary after `rtk`).
         if stripped.is_empty() || stripped.len() == rest.len() {
@@ -413,8 +417,9 @@ pub(crate) fn normalize_for_matching(segment: &str) -> &str {
 
 /// True when `segment` is an `rtk …` invocation or bare `rtk` — i.e. text
 /// a host's native permission matcher would not recognize as the
-/// underlying tool. Single source of truth for the hook's
-/// already-rtk-segment gate (see `hook_cmd::contains_already_rtk_segment`).
+/// underlying tool. Single predicate behind BOTH hook gates — the
+/// any-segment deny gate and the all-segments allow gate (see the
+/// quantifier note above `hook_cmd::contains_already_rtk_segment`).
 pub(crate) fn is_rtk_prefixed(segment: &str) -> bool {
     segment == "rtk" || normalize_for_matching(segment).len() != segment.len()
 }
@@ -1270,6 +1275,12 @@ mod tests {
         assert_eq!(normalize_for_matching("rtk"), "rtk");
         assert_eq!(normalize_for_matching("rtkinit --help"), "rtkinit --help");
         assert_eq!(normalize_for_matching("grep foo"), "grep foo");
+        // Unicode whitespace is NOT a word boundary to the shell — the whole
+        // thing is one unexecutable word, so it must not normalize.
+        assert_eq!(
+            normalize_for_matching("rtk\u{A0}grep foo"),
+            "rtk\u{A0}grep foo"
+        );
     }
 
     #[test]
