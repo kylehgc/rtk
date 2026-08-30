@@ -70,6 +70,14 @@ cold will not.
   a fix changes routing/classification, re-ask of every green test:
   "does this input still exercise the path it claims to?" Prefer probe
   inputs modeled on the real fixtures over minimal synthetic shapes.
+- **A negative claim ("no fixture-grounded shape exists") is a claim to
+  verify by enumeration, not an impression.** On #3199 we declined to
+  gate `Running` lines "for lack of a distinguishing shape" — the
+  maintainer enumerated all 22 `Running` lines across all 16 fixtures
+  and found the invariant in one pass (whitespace-free FQCN, because
+  Surefire emits `"Running " + clazz.getName()`). Before declining a
+  gate, list the actual lines and reason from what the emitting tool's
+  code can produce; state the count in the PR reply.
 
 ## Fix rounds
 
