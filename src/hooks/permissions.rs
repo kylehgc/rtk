@@ -428,8 +428,11 @@ const COMMAND_WRAPPERS: [&str; 5] = ["proxy", "run", "err", "test", "summary"];
 
 /// True when `segment` reaches its executed command through one of
 /// [`COMMAND_WRAPPERS`]. Such segments are matched best-effort for
-/// deny/ask rules but must never be allow/ask-ASSERTED by the hook: the
-/// wrapper's argument is arbitrary text RTK cannot fully attest.
+/// deny/ask rules but must never be allow-asserted via the hook's
+/// already-rtk (no-rewrite) arm: the wrapper's argument is arbitrary
+/// text RTK cannot fully attest. (Ask and deny asserts are not excluded
+/// — they can only ever produce a prompt or a block, so over-firing is
+/// fail-safe.)
 pub(crate) fn is_wrapped_invocation(segment: &str) -> bool {
     let mut s = segment;
     loop {
@@ -1318,6 +1321,7 @@ mod tests {
         assert_eq!(normalize_for_matching("rtk grep foo"), "grep foo");
         assert_eq!(normalize_for_matching("rtk rtk grep foo"), "grep foo");
         assert_eq!(normalize_for_matching("rtk\tgrep foo"), "grep foo");
+        assert_eq!(normalize_for_matching("rtk\r\ngrep foo"), "grep foo");
         assert_eq!(normalize_for_matching("rtk  grep foo"), "grep foo");
         assert_eq!(normalize_for_matching("rtk"), "rtk");
         assert_eq!(normalize_for_matching("rtkinit --help"), "rtkinit --help");
