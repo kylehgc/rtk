@@ -69,6 +69,12 @@ pub fn strip_leading_bom(input: &str) -> &str {
     s
 }
 
+/// BOM-tolerant `serde_json::from_str`. Prefer this over `serde_json::from_str`
+/// anywhere the JSON may have been written by a human, an editor, or another tool.
+pub fn from_json_str<'a, T: serde::Deserialize<'a>>(s: &'a str) -> serde_json::Result<T> {
+    serde_json::from_str(strip_leading_bom(s))
+}
+
 /// Executes a command and returns cleaned stdout/stderr.
 ///
 /// # Arguments
@@ -457,7 +463,7 @@ fn composer_bin_dirs_from(env_bin_dir: Option<&str>, composer_json: Option<&str>
 }
 
 fn read_composer_bin_dir(composer_json: &str) -> Option<PathBuf> {
-    let parsed: Value = serde_json::from_str(strip_leading_bom(composer_json)).ok()?;
+    let parsed: Value = from_json_str(composer_json).ok()?;
     let bin_dir = parsed.get("config")?.get("bin-dir")?.as_str()?.trim();
     if bin_dir.is_empty() {
         None
@@ -649,6 +655,30 @@ mod tests {
         assert_eq!(strip_leading_bom("\u{feff}\u{feff}\u{feff}hello"), "hello");
         // BOM in the middle is preserved (not "leading").
         assert_eq!(strip_leading_bom("a\u{feff}b"), "a\u{feff}b");
+    }
+
+    #[test]
+    fn test_from_json_str_strips_bom() {
+        let v: Value = from_json_str("\u{feff}{\"foo\": 1}").unwrap();
+        assert_eq!(v["foo"], 1);
+    }
+
+    #[test]
+    fn test_from_json_str_no_bom() {
+        let v: Value = from_json_str("{\"foo\": 1}").unwrap();
+        assert_eq!(v["foo"], 1);
+    }
+
+    #[test]
+    fn test_from_json_str_borrowed_type() {
+        // Deserialize<'a> (not DeserializeOwned) must keep zero-copy
+        // borrowing working through the wrapper.
+        #[derive(serde::Deserialize)]
+        struct Borrowed<'a> {
+            name: &'a str,
+        }
+        let b: Borrowed = from_json_str("\u{feff}{\"name\": \"rtk\"}").unwrap();
+        assert_eq!(b.name, "rtk");
     }
 
     #[test]
