@@ -357,13 +357,11 @@ fn similarity(a: &str, b: &str) -> f64 {
 
 /// `@@ -old_start[,old_count] +new_start[,new_count] @@` -> (old_count, new_count).
 ///
-/// Returns `None` for a combined diff (`@@@ … @@@`, from `git show --cc`), whose
-/// extra parent column this budget does not model — those fall back to the
-/// marker rule in the caller.
+/// `None` means "no budget": the header is a combined diff (`@@@ … @@@`, from
+/// `git show --cc`, whose extra parent column this does not model) or is
+/// malformed. Callers fall back to the marker rule for those.
 fn parse_hunk_counts(line: &str) -> Option<(usize, usize)> {
-    if line.starts_with("@@@") {
-        return None;
-    }
+    // `@@@` fails this prefix, which is what routes combined diffs to `None`.
     let mut parts = line.strip_prefix("@@ ")?.split_whitespace();
     let old = parts.next()?.strip_prefix('-')?;
     let new = parts.next()?.strip_prefix('+')?;
@@ -389,19 +387,37 @@ fn condense_unified_diff(diff: &str) -> String {
     // removed line whose content is `-- note` is also `--- note` on the wire.
     // Only position separates them, so track whether we are inside a hunk.
     //
-    // What ends a hunk is the line budget the `@@` header declares, not a guess.
-    // A separator-based rule cannot work: `diff --git`, `diff --cc`, `diff -ru`
+    // What ends a hunk is the line budget the `@@` header declares. A
+    // separator-based rule cannot work: `diff --git`, `diff --cc`, `diff -ru`
     // and `Index:` all spell it differently, and a plain `diff -u` patch spells
-    // it not at all — its next file begins with `--- a/f`, which is itself a
-    // valid hunk-body marker. Counting the declared lines down settles every
-    // one of those without naming any of them. Combined diffs (`@@@`) carry a
-    // second parent column the budget does not model, so they keep the marker
-    // rule: any line without a ` `, `+`, `-` or `\` marker has left the hunk.
+    // it not at all — its next file opens with `--- a/f`, itself a valid
+    // hunk-body marker. Counting the declared lines down settles all of them
+    // without naming any. Headers with no usable budget (combined `@@@`) keep
+    // the marker rule: a line with no ` `, `+`, `-` or `\` marker has left the
+    // hunk.
+    //
+    // The budget is only as good as the patch. Hand-maintained queues and
+    // pasted patches carry stale counts, and trusting them would drop content
+    // or misread the next file's header — silently, which is the one outcome
+    // this function must not produce. So disagreement is detected rather than
+    // guessed around, and answered with the fallback the repo mandates: return
+    // the input untouched. Worst case is no compression, never lost lines.
     let mut in_hunk = false;
     let mut budget: Option<(usize, usize)> = None;
 
     for line in diff.lines() {
+        // Evaluated before this line is classified, so a hunk that declared
+        // (0,0) is already shut when the line after the header arrives.
+        if in_hunk && budget == Some((0, 0)) {
+            in_hunk = false;
+        }
+
         if line.starts_with("@@") {
+            // A budget still owing lines when the next hunk opens means the
+            // declared counts did not match the body.
+            if in_hunk && matches!(budget, Some((o, n)) if o > 0 || n > 0) {
+                return diff.to_string();
+            }
             in_hunk = true;
             budget = parse_hunk_counts(line);
             continue;
@@ -412,11 +428,11 @@ fn condense_unified_diff(diff: &str) -> String {
                 match line.as_bytes().first() {
                     Some(b'+') => *new_left = new_left.saturating_sub(1),
                     Some(b'-') => *old_left = old_left.saturating_sub(1),
-                    // "\ No newline at end of file" annotates the line above and
-                    // consumes no budget of its own.
+                    // "\ No newline at end of file" annotates the line above
+                    // and consumes no budget of its own.
                     Some(b'\\') => {}
-                    // Context line — present in both sides. Empty counts as one:
-                    // a context line can lose its single leading space in transit.
+                    // Context line — present on both sides. Empty counts as
+                    // one: a context line can lose its lone leading space.
                     _ => {
                         *old_left = old_left.saturating_sub(1);
                         *new_left = new_left.saturating_sub(1);
@@ -450,13 +466,21 @@ fn condense_unified_diff(diff: &str) -> String {
         } else if in_hunk && line.starts_with('-') {
             removed += 1;
             changes.push(line.to_string());
+        } else if line.starts_with('+') || line.starts_with('-') {
+            // A marked line outside every hunk. `git format-patch` legitimately
+            // emits two: `---` before the diffstat and `-- ` before the version
+            // trailer. Anything else means the budget ran out before the body
+            // did, so the parse is unreliable — hand back the input rather than
+            // drop the line.
+            if line != "---" && line.trim_end() != "--" {
+                return diff.to_string();
+            }
         }
+    }
 
-        // The hunk ends exactly where its declared budget runs out, so the next
-        // file's `--- `/`+++ ` pair is read as headers even with no separator.
-        if in_hunk && budget == Some((0, 0)) {
-            in_hunk = false;
-        }
+    // A budget still owing lines at EOF means the same mismatch.
+    if in_hunk && matches!(budget, Some((o, n)) if o > 0 || n > 0) {
+        return diff.to_string();
     }
 
     // Last file
@@ -857,9 +881,8 @@ diff --git a/b.rs b/b.rs
                 result
             );
         }
-        // Scoped to change lines. The `  ... +N more` trailer is indented and
-        // is not a change line, so a blanket "no line starts with a space"
-        // would be false for any diff with more than ten changes.
+        // Scoped to change lines: a `[file] …` header is not one, and only
+        // change lines carry the column-0 guarantee this pins.
         assert!(
             !result
                 .lines()
@@ -894,7 +917,7 @@ diff --git a/b.rs b/b.rs
         // comments and mail signature delimiters all land here. Dropping them
         // loses the lines and desyncs the counter.
         let diff = "diff --git a/m.sql b/m.sql\n--- a/m.sql\n+++ b/m.sql\n\
-                    @@ -1,3 +1,1 @@\n--- Legacy bootstrap\n--- DO NOT RUN\n-  email TEXT,\n";
+                    @@ -1,3 +0,0 @@\n--- Legacy bootstrap\n--- DO NOT RUN\n-  email TEXT,\n";
         let result = condense_unified_diff(diff);
         assert!(
             result.lines().any(|l| l == "--- Legacy bootstrap"),
@@ -921,7 +944,7 @@ diff --git a/b.rs b/b.rs
         // renamed the file to a fragment of the user's own diff and dropped the
         // line — the filename in the output was no longer a filename at all.
         let diff = "diff --git a/c.md b/c.md\n--- a/c.md\n+++ b/c.md\n\
-                    @@ -1,2 +1,2 @@\n+++ new section marker\n-- removed a feature\n";
+                    @@ -1,1 +1,1 @@\n+++ new section marker\n-- removed a feature\n";
         let result = condense_unified_diff(diff);
         assert!(result.contains("[file] c.md"), "got:\n{}", result);
         assert!(
@@ -976,7 +999,7 @@ diff --git a/b.rs b/b.rs
         // following `---`/`+++` content lines read as headers, which drops them
         // AND renames the file to a fragment of the diff. The lines after the
         // blank are chosen so the two behaviours differ.
-        let diff = "diff --git a/m.sql b/m.sql\n--- a/m.sql\n+++ b/m.sql\n@@ -1,5 +1,5 @@\n-before\n\n--- legacy note\n+++ new marker\n+after\n";
+        let diff = "diff --git a/m.sql b/m.sql\n--- a/m.sql\n+++ b/m.sql\n@@ -1,3 +1,3 @@\n-before\n\n--- legacy note\n+++ new marker\n+after\n";
         let r = condense_unified_diff(diff);
         assert!(r.contains("[file] m.sql"), "file renamed by content: {}", r);
         assert!(r.lines().any(|l| l == "--- legacy note"), "got: {}", r);
@@ -997,7 +1020,7 @@ diff --git a/b.rs b/b.rs
             "diff --git a/config.yaml b/config.yaml".to_string(),
             "--- a/config.yaml".to_string(),
             "+++ b/config.yaml".to_string(),
-            "@@ -1,200 +1,200 @@".to_string(),
+            format!("@@ -1,{} +1,{} @@", removed.max(1), added.max(1)),
         ];
         for i in 0..removed {
             lines.push(format!("-old_value_{}", i));
@@ -1145,7 +1168,7 @@ diff --git a/b.rs b/b.rs
         // `\ No newline at end of file` annotates the line above. It carries no
         // +/- marker, so it must be recognised as hunk body — otherwise it ends
         // the hunk and the following content lines are misread as headers.
-        let diff = "diff --git a/f.rs b/f.rs\n--- a/f.rs\n+++ b/f.rs\n@@ -1,2 +1,2 @@\n\
+        let diff = "diff --git a/f.rs b/f.rs\n--- a/f.rs\n+++ b/f.rs\n@@ -1,2 +1,1 @@\n\
                     -old\n\\ No newline at end of file\n--- removed note\n+++ added marker\n";
         let r = condense_unified_diff(diff);
         assert!(r.contains("[file] f.rs"), "file renamed by content:\n{}", r);
@@ -1174,7 +1197,7 @@ diff --git a/b.rs b/b.rs
         let out = condense_unified_diff(raw);
 
         let saved = 100.0 - (count_tokens(&out) as f64 / count_tokens(raw) as f64 * 100.0);
-        assert!(saved > 5.0, "savings regressed to {:.1}%", saved);
+        assert!(saved > 8.0, "savings regressed to {:.1}%", saved);
 
         // Fidelity: every +/- line in the input survives, at column 0.
         let want: Vec<&str> = raw
@@ -1193,5 +1216,76 @@ diff --git a/b.rs b/b.rs
                 line
             );
         }
+    }
+
+    #[test]
+    fn test_condense_unified_diff_combined_diff_multi_file() {
+        // `git show --cc` headers are `@@@ … @@@`, which carry a second parent
+        // column the line budget does not model, so they parse to no budget and
+        // fall back to the marker rule. That fallback is the ONLY thing closing
+        // a hunk here — without it the second file folds into the first.
+        let diff = "diff --cc a.txt\n--- a/a.txt\n+++ b/a.txt\n@@@ -1,1 -1,1 +1,1 @@@\n- M1\n++A\ndiff --cc b.txt\n--- a/b.txt\n+++ b/b.txt\n@@@ -1,1 -1,1 +1,1 @@@\n- M2\n++B\n";
+        let r = condense_unified_diff(diff);
+        assert_eq!(
+            r.lines().filter(|l| l.starts_with("[file]")).count(),
+            2,
+            "combined diff collapsed:\n{}",
+            r
+        );
+        assert!(r.contains("[file] a.txt"), "got:\n{}", r);
+        assert!(r.contains("[file] b.txt"), "got:\n{}", r);
+        assert!(
+            !r.lines().any(|l| l == "--- a/b.txt"),
+            "header leaked as content:\n{}",
+            r
+        );
+    }
+
+    #[test]
+    fn test_condense_unified_diff_budget_shorter_than_body_passes_through() {
+        // Hand-maintained patch queues and pasted patches carry stale counts.
+        // Here the body outruns the declared budget. Summarising anyway would
+        // drop the trailing changes and report a counter to match — silent
+        // loss, the one outcome this filter must never produce. Fall back.
+        let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,1 @@\n-old1\n+new1\n-old2\n+new2\n";
+        let r = condense_unified_diff(diff);
+        assert_eq!(r, diff, "must hand back the input verbatim, got:\n{}", r);
+    }
+
+    #[test]
+    fn test_condense_unified_diff_budget_longer_than_body_passes_through() {
+        // The mirror case, and the dangerous one: on a plain patch the budget
+        // is the only close, so an over-declared count swallows the next
+        // file's headers as content and loses that file entirely.
+        let diff = "--- a/a.rs\n+++ b/a.rs\n@@ -1,20 +1,20 @@\n-old1\n+new1\n--- a/b.rs\n+++ b/b.rs\n@@ -1,20 +1,20 @@\n-old2\n+new2\n";
+        let r = condense_unified_diff(diff);
+        assert_eq!(r, diff, "must hand back the input verbatim, got:\n{}", r);
+    }
+
+    #[test]
+    fn test_condense_unified_diff_zero_budget_hunk_closes_immediately() {
+        // `@@ -0,0 +0,0 @@` declares an empty body, so the very next line is
+        // already outside the hunk. Evaluating the close only after processing
+        // a line left it open for exactly one extra line, which ate the next
+        // file's `--- ` header as a removal.
+        let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -0,0 +0,0 @@\ndiff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-x\n+y\n";
+        let r = condense_unified_diff(diff);
+        assert!(r.contains("[file] b.rs (+1 -1)"), "got:\n{}", r);
+        assert!(
+            !r.lines().any(|l| l == "--- a/b.rs"),
+            "header counted as a change:\n{}",
+            r
+        );
+    }
+
+    #[test]
+    fn test_condense_unified_diff_added_line_past_budget_passes_through() {
+        // Mirror of the removed-line case, and it needs its own fixture: the
+        // ordering here makes an ADDED line the first marked line after the
+        // budget closes. Counting it instead of falling back would emit a
+        // summary that silently omits the rest of the body.
+        let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,1 @@\n+new1\n-old1\n+new2\n";
+        let r = condense_unified_diff(diff);
+        assert_eq!(r, diff, "must hand back the input verbatim, got:\n{}", r);
     }
 }
