@@ -48,7 +48,7 @@ output *larger* and more correct. This fork does not claim to save more tokens t
 upstream — that is upstream's pitch. It claims to not lose your errors.
 
 <!-- FORK_DELTA_START -->
-**63 fixes in this fork that upstream does not have.** Each links to the commit,
+**65 fixes in this fork that upstream does not have.** Each links to the commit,
 where the original author is recorded. Adopted fixes come from community PRs that upstream
 has not merged — see the [adoption issues](https://github.com/kylehgc/rtk/issues?q=is%3Aissue+Adopt+upstream)
 for provenance.
@@ -60,6 +60,8 @@ upstream in another form.
 
 | Fix | Commit |
 |---|---|
+| fix(jest): equals-form --reporters is greedy too; respect -- terminator | [`f0f34af`](https://github.com/kylehgc/rtk/commit/f0f34af) |
+| fix(jest): consume the values of a space-separated --reporters flag | [`b4aceb6`](https://github.com/kylehgc/rtk/commit/b4aceb6) |
 | fix(playwright): consume the value of a space-separated --reporter flag | [`692fb72`](https://github.com/kylehgc/rtk/commit/692fb72) |
 | fix(hooks): broaden ask assert to any-segment; silence no-op renders | [`31fceff`](https://github.com/kylehgc/rtk/commit/31fceff) |
 | fix(hooks): add rtk run to wrappers; never assert for wrapped invocations | [`d9e7458`](https://github.com/kylehgc/rtk/commit/d9e7458) |
