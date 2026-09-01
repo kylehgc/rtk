@@ -130,8 +130,8 @@ This covers a subset of the fixes listed above; fixes tested only by internal un
 cannot be lifted into upstream's tree, so they are claimed but not proven.
 
 <!-- FORK_PROOF_START -->
-**16 claims proven** by tests that pass on this fork and fail against
-`upstream/develop` — 14 fidelity, 2 reduction. Run them yourself with
+**12 claims proven** by tests that pass on this fork and fail against
+`upstream/develop` — 11 fidelity, 1 reduction. Run them yourself with
 `scripts/fork-proof.sh`.
 
 | Claim | Test | Upstream | This fork |
@@ -142,10 +142,6 @@ cannot be lifted into upstream's tree, so they are claimed but not proven.
 | A non-UTF-8 argument to a command that does not exist exits cleanly instead of aborting. | `non_utf8_arg_to_missing_command_exits_cleanly` | ❌ fails | ✅ passes |
 | Upstream discards the error output of a failed `pnpm install`; the fork preserves it. | `pnpm_install_failure_preserves_stdout_error_output` | ❌ fails | ✅ passes |
 | Upstream swallows a failing tool's stderr under stdout-only filtering; the fork surfaces it. | `failing_tool_stderr_reaches_the_user` | ❌ fails | ✅ passes |
-| Upstream aborts `rtk init` with a JSON parse error on a UTF-8 BOM-prefixed settings.json (which Notepad and PowerShell 5.1 write by default); the fork strips the BOM and parses it. | `init_dry_run_tolerates_bom_prefixed_settings_json` | ❌ fails | ✅ passes |
-| Upstream's tsc filter doesn't recognize `tsc --noEmit --pretty` diagnostics (ANSI colors, code frames) and passes them through near-unfiltered; the fork parses and compresses them >=60% (measured: rtk's own bytes/4 token estimator, input vs. output, on a real captured 9-diagnostic fixture). | `tsc_pipe_filter_compresses_real_pretty_diagnostics` | ❌ fails | ✅ passes |
-| Upstream drops the diff hunks from `git log -p`, keeping only a 3-line-capped commit summary; the fork passes the real patch through. | `git_log_patch_preserves_diff_hunks` | ❌ fails | ✅ passes |
-| Upstream's `git log --stat` loses commits whose diffstat pushes the next commit's header out of its 3-line body cap; the fork keeps every commit. | `git_log_stat_keeps_every_commit` | ❌ fails | ✅ passes |
 | Upstream's Claude hook only reads the legacy `tool_input` key and silently ignores the current `input`-shaped PreToolUse payload; the fork rewrites it and preserves sibling fields. | `claude_hook_rewrites_current_input_key_shape` | ❌ fails | ✅ passes |
 | Upstream's Claude hook omits `permissionDecision` for an unconfigured (Default-verdict) rewrite, relying on an absent key; the fork explicitly emits `"ask"`. | `claude_hook_emits_ask_decision_for_default_verdict` | ❌ fails | ✅ passes |
 | Upstream forwards `-r`/`-R` to ripgrep unchanged, so grep muscle memory (`rg -rn`) is silently read as `--replace` and every match is rewritten to garbage; the fork strips it before rg runs. | `rg_short_r_cluster_does_not_trigger_ripgrep_replace` | ❌ fails | ✅ passes |
