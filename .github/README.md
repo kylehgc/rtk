@@ -48,7 +48,7 @@ output *larger* and more correct. This fork does not claim to save more tokens t
 upstream — that is upstream's pitch. It claims to not lose your errors.
 
 <!-- FORK_DELTA_START -->
-**61 fixes in this fork that upstream does not have.** Each links to the commit,
+**58 fixes in this fork that upstream does not have.** Each links to the commit,
 where the original author is recorded. Adopted fixes come from community PRs that upstream
 has not merged — see the [adoption issues](https://github.com/kylehgc/rtk/issues?q=is%3Aissue+Adopt+upstream)
 for provenance.
@@ -108,12 +108,9 @@ upstream in another form.
 | fix(search): spare value tokens from the rg -r/-R letter strip | [`d43cef5`](https://github.com/kylehgc/rtk/commit/d43cef5) |
 | fix(search): strip ripgrep -r/-R so rg --replace no longer corrupts output | [`00d8ee4`](https://github.com/kylehgc/rtk/commit/00d8ee4) |
 | fix(hook): accept current Claude tool input keys | [`c8d6e28`](https://github.com/kylehgc/rtk/commit/c8d6e28) |
-| fix(init): strip UTF-8 BOM when parsing hand-edited JSON config files | [`4e1ae5c`](https://github.com/kylehgc/rtk/commit/4e1ae5c) |
 | feat(init): add PowerShell hook for Claude Code on Windows | [`cc5b6d3`](https://github.com/kylehgc/rtk/commit/cc5b6d3) |
 | feat(mvn): add rtk mvnd support for Maven Daemon | [`fa55089`](https://github.com/kylehgc/rtk/commit/fa55089) |
-| fix(tsc): handle pretty diagnostics | [`a7998ad`](https://github.com/kylehgc/rtk/commit/a7998ad) |
 | fix(pnpm): preserve install failure output | [`2bbe81f`](https://github.com/kylehgc/rtk/commit/2bbe81f) |
-| fix(git): keep every commit in git log --stat output | [`791359c`](https://github.com/kylehgc/rtk/commit/791359c) |
 | fix(hook): hook warning repeats on every command on Windows | [`8945b96`](https://github.com/kylehgc/rtk/commit/8945b96) |
 | fix(hooks): add -- terminator to hermes, opencode, and pi rewrite callers | [`8253401`](https://github.com/kylehgc/rtk/commit/8253401) |
 | fix(cli): handle non-UTF-8 argv in raw-execution fallback | [`22990e9`](https://github.com/kylehgc/rtk/commit/22990e9) |

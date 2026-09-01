@@ -16,10 +16,6 @@ non_utf8_pattern_forwards_original_bytes	fidelity	The wrapped tool receives the 
 non_utf8_arg_to_missing_command_exits_cleanly	fidelity	A non-UTF-8 argument to a command that does not exist exits cleanly instead of aborting.
 pnpm_install_failure_preserves_stdout_error_output	fidelity	Upstream discards the error output of a failed `pnpm install`; the fork preserves it.
 failing_tool_stderr_reaches_the_user	fidelity	Upstream swallows a failing tool's stderr under stdout-only filtering; the fork surfaces it.
-init_dry_run_tolerates_bom_prefixed_settings_json	fidelity	Upstream aborts `rtk init` with a JSON parse error on a UTF-8 BOM-prefixed settings.json (which Notepad and PowerShell 5.1 write by default); the fork strips the BOM and parses it.
-tsc_pipe_filter_compresses_real_pretty_diagnostics	reduction	Upstream's tsc filter doesn't recognize `tsc --noEmit --pretty` diagnostics (ANSI colors, code frames) and passes them through near-unfiltered; the fork parses and compresses them >=60% (measured: rtk's own bytes/4 token estimator, input vs. output, on a real captured 9-diagnostic fixture).
-git_log_patch_preserves_diff_hunks	fidelity	Upstream drops the diff hunks from `git log -p`, keeping only a 3-line-capped commit summary; the fork passes the real patch through.
-git_log_stat_keeps_every_commit	fidelity	Upstream's `git log --stat` loses commits whose diffstat pushes the next commit's header out of its 3-line body cap; the fork keeps every commit.
 claude_hook_rewrites_current_input_key_shape	fidelity	Upstream's Claude hook only reads the legacy `tool_input` key and silently ignores the current `input`-shaped PreToolUse payload; the fork rewrites it and preserves sibling fields.
 claude_hook_emits_ask_decision_for_default_verdict	fidelity	Upstream's Claude hook omits `permissionDecision` for an unconfigured (Default-verdict) rewrite, relying on an absent key; the fork explicitly emits `"ask"`.
 rg_short_r_cluster_does_not_trigger_ripgrep_replace	fidelity	Upstream forwards `-r`/`-R` to ripgrep unchanged, so grep muscle memory (`rg -rn`) is silently read as `--replace` and every match is rewritten to garbage; the fork strips it before rg runs.
@@ -31,3 +27,10 @@ piped_cargo_test_filter_does_not_restate_captured_warnings	reduction	Measures: o
 # behaviour upstream also has. They pass on both sides and prove no difference:
 #   human_facing_git_output_is_still_filtered
 #   successful_tool_stderr_stays_suppressed
+#
+# Healed 2026-09-01 (fork-proof run 33357472129 against upstream/develop): upstream merged
+# equivalent fixes, so these now pass on both sides and are kept only as regression guards.
+#   init_dry_run_tolerates_bom_prefixed_settings_json   (upstream strip_leading_bom in init.rs)
+#   tsc_pipe_filter_compresses_real_pretty_diagnostics  (upstream tsc_cmd.rs byte-identical)
+#   git_log_patch_preserves_diff_hunks                  (upstream ca89767 requests_raw_log_output)
+#   git_log_stat_keeps_every_commit                     (upstream ca89767 requests_raw_log_output)
