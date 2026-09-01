@@ -48,7 +48,7 @@ output *larger* and more correct. This fork does not claim to save more tokens t
 upstream — that is upstream's pitch. It claims to not lose your errors.
 
 <!-- FORK_DELTA_START -->
-**58 fixes in this fork that upstream does not have.** Each links to the commit,
+**60 fixes in this fork that upstream does not have.** Each links to the commit,
 where the original author is recorded. Adopted fixes come from community PRs that upstream
 has not merged — see the [adoption issues](https://github.com/kylehgc/rtk/issues?q=is%3Aissue+Adopt+upstream)
 for provenance.
@@ -60,6 +60,8 @@ upstream in another form.
 
 | Fix | Commit |
 |---|---|
+| fix(diff): satisfy clippy int_plus_one in the adopted replay_classic test | [`7753ec7`](https://github.com/kylehgc/rtk/commit/7753ec7) |
+| fix(diff): stop reporting differing files as identical, and align by LCS | [`acbe88c`](https://github.com/kylehgc/rtk/commit/acbe88c) |
 | fix(jest): equals-form --reporters is greedy too; respect -- terminator | [`f0f34af`](https://github.com/kylehgc/rtk/commit/f0f34af) |
 | fix(jest): consume the values of a space-separated --reporters flag | [`b4aceb6`](https://github.com/kylehgc/rtk/commit/b4aceb6) |
 | fix(playwright): consume the value of a space-separated --reporter flag | [`692fb72`](https://github.com/kylehgc/rtk/commit/692fb72) |
