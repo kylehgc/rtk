@@ -52,9 +52,10 @@ fn rtk_stdout_in_dir(dir: &Path, args: &[&str]) -> String {
 /// `-p` must return the real diff, not the 3-line-capped commit summary.
 /// The fixture commit adds 8 lines to a new file: the diff has 5 header
 /// lines (`diff --git`, `new file mode`, `index`, `---`, `+++`) before the
-/// `@@` hunk marker even starts, so a body cap of 3 discards the hunk header
-/// and every added line — exactly what upstream's filter still does, since
-/// it has no raw-passthrough path for `-p`.
+/// `@@` hunk marker even starts, so a body cap of 3 would discard the hunk
+/// header and every added line. Healed 2026-09-01: upstream `0baf07e` /
+/// `ca89767` route `-p` through raw passthrough too, so this is now a
+/// regression guard that passes on both sides, not a fork claim.
 #[test]
 fn git_log_patch_preserves_diff_hunks() {
     let dir = init_git_repo();
@@ -90,14 +91,15 @@ fn git_log_patch_preserves_diff_hunks() {
 /// Every commit `git log --stat` returns must survive RTK's filter, diffstat
 /// and all. Each fixture commit touches 3 files, so its diffstat is 4 lines
 /// (3 file lines + the "N files changed" summary) — one more than the
-/// filter's 3-line body cap, and enough to fully evict a commit header on
-/// upstream: its trailing `---END---` marker leaves this commit's diffstat
-/// heading the *next* commit's block, so the block's first (diffstat) line
-/// gets misread as that next commit's header, and the real header — now
-/// demoted to an ordinary body line — gets pushed out once the remaining 3
-/// diffstat lines alone fill the cap. 15 commits, well past RTK's default
-/// 10-commit `git log` limit, so this also proves the fix coexists with
-/// ordinary head-of-history truncation rather than disabling it.
+/// filter's 3-line body cap, and enough to fully evict a commit header when
+/// the compact path parses it: a trailing `---END---` marker leaves this
+/// commit's diffstat heading the *next* commit's block, so the block's first
+/// (diffstat) line gets misread as that next commit's header, and the real
+/// header — now demoted to an ordinary body line — gets pushed out once the
+/// remaining 3 diffstat lines alone fill the cap. Healed 2026-09-01: upstream
+/// `ca89767` sends `--stat` (and every other diff-shaped flag) through raw
+/// passthrough, so the compact parser never sees a diffstat and this test
+/// passes on both sides. Kept as a regression guard for that routing.
 #[test]
 fn git_log_stat_keeps_every_commit() {
     let dir = init_git_repo();
@@ -118,8 +120,8 @@ fn git_log_stat_keeps_every_commit() {
         );
     }
 
-    // No -N: exercise RTK's default 10-commit limit, so the fixture proves
-    // the fix coexists with ordinary truncation rather than disabling it.
+    // No -N: `--stat` takes the raw passthrough path, which applies no
+    // commit limit, so all 15 commits are expected back.
     let out = rtk_stdout_in_dir(dir.path(), &["git", "log", "--stat"]);
 
     for i in 6..=15 {

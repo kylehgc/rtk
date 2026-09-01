@@ -45,6 +45,9 @@ HEALED_SHAS=(
   b008c53 # 2026-09-01 upstream condense_unified_diff emits column 0 itself (claudedocs/sync-conflict-2026-09-01.md)
   6871925 # 2026-09-01 superseded by upstream tool_form() exclude matching, PR #3749 (claudedocs/sync-conflict-2026-09-01.md)
   8a27c09 # 2026-09-01 superseded by upstream 2e0dd29 head/tail exclude check, PR #3324 (claudedocs/sync-conflict-2026-09-01.md)
+  4e1ae5c # 2026-09-01 merged upstream as 55cbce2 (reworked in review, patch-id differs); proof test passes upstream (run 33357472129)
+  a7998ad # 2026-09-01 merged upstream as 9d1c60a (patch-id differs, tsc_cmd.rs now byte-identical); proof test passes upstream
+  791359c # 2026-09-01 superseded by upstream ca89767 requests_raw_log_output (--stat raw); proof test passes upstream
 )
 
 # ponytail: patch-id scan bounded to upstream commits since UPSTREAM_SINCE.

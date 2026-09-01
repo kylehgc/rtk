@@ -1,9 +1,10 @@
 //! `rtk init -g --auto-patch` must tolerate a UTF-8 BOM in a hand-edited
 //! settings.json. Notepad and PowerShell 5.1's `Out-File -Encoding utf8`
-//! both prepend one by default. Upstream's JSON reader in
-//! `patch_settings_json_command` rejects a BOM'd file outright ("expected
+//! both prepend one by default. Before `strip_leading_bom`, the JSON reader
+//! in `patch_settings_json_command` rejected a BOM'd file outright ("expected
 //! value at line 1 column 1"), aborting the hook install and blaming the
-//! user's otherwise-valid JSON.
+//! user's otherwise-valid JSON. Healed 2026-09-01: upstream merged the same
+//! fix (`55cbce2`), so this is a regression guard that passes on both sides.
 //!
 //! Isolated via `CLAUDE_CONFIG_DIR`, which `resolve_claude_dir()` honors as
 //! an override ahead of `$HOME`/`%USERPROFILE%` — this never touches the
