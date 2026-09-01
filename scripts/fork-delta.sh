@@ -41,6 +41,10 @@ HEALED_SHAS=(
   e1e37fd # 2026-08-05 superseded by upstream's analyze_pipeline redesign (#88 audit)
   e95207d # 2026-08-05 superseded by upstream's analyze_pipeline redesign (#88 audit)
   bfce39e # 2026-08-12 subsumed by upstream PR #2997 review commit (claudedocs/sync-conflict-2026-08-12.md)
+  75ec765 # 2026-09-01 superseded by upstream PR #3269 column-0 compact_diff (claudedocs/sync-conflict-2026-09-01.md)
+  b008c53 # 2026-09-01 upstream condense_unified_diff emits column 0 itself (claudedocs/sync-conflict-2026-09-01.md)
+  6871925 # 2026-09-01 superseded by upstream tool_form() exclude matching, PR #3749 (claudedocs/sync-conflict-2026-09-01.md)
+  8a27c09 # 2026-09-01 superseded by upstream 2e0dd29 head/tail exclude check, PR #3324 (claudedocs/sync-conflict-2026-09-01.md)
 )
 
 # ponytail: patch-id scan bounded to upstream commits since UPSTREAM_SINCE.
