@@ -2389,7 +2389,7 @@ mod tests {
             };
 
             // Copy the untouched file1 lines that precede this hunk.
-            assert!(start1 >= cursor + 1, "hunks must not overlap: {header}");
+            assert!(start1 > cursor, "hunks must not overlap: {header}");
             for line in a.iter().take(start1 - 1).skip(cursor) {
                 out.push((*line).to_string());
             }
