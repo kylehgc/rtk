@@ -16,7 +16,9 @@ use cmds::js::{
     vitest_cmd,
 };
 use cmds::jvm::{gradlew_cmd, mvn_cmd};
-use cmds::php::{ecs_cmd, paratest_cmd, pest_cmd, php_cmd, phpstan_cmd, phpunit_cmd, pint_cmd};
+use cmds::php::{
+    ecs_cmd, paratest_cmd, pest_cmd, php_cmd, phpstan_cmd, phpt_cmd, phpunit_cmd, pint_cmd,
+};
 use cmds::python::{mypy_cmd, pip_cmd, pytest_cmd, ruff_cmd, uv_cmd};
 use cmds::ruby::{rake_cmd, rspec_cmd, rubocop_cmd};
 use cmds::rust::{cargo_cmd, runner};
@@ -768,6 +770,13 @@ enum Commands {
     /// Laravel Pint (PHP-CS-Fixer) code style fixer with compact output
     Pint {
         /// Pint arguments (e.g., --test, app/)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
+    /// PHP run-tests.php (.phpt) with compact summary and failure diffs
+    Phpt {
+        /// Arguments forwarded to `php run-tests.php` (e.g., Zend/tests/, -q)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -2428,6 +2437,8 @@ fn run_cli() -> Result<i32> {
 
         Commands::Pint { args } => pint_cmd::run(&args, cli.verbose)?,
 
+        Commands::Phpt { args } => phpt_cmd::run(&args, cli.verbose)?,
+
         Commands::Rake { args } => rake_cmd::run(&args, cli.verbose)?,
 
         Commands::Rubocop { args } => rubocop_cmd::run(&args, cli.verbose)?,
@@ -2821,6 +2832,7 @@ fn is_operational_command(cmd: &Commands) -> bool {
             | Commands::Paratest { .. }
             | Commands::Ecs { .. }
             | Commands::Pint { .. }
+            | Commands::Phpt { .. }
             | Commands::Rake { .. }
             | Commands::Rubocop { .. }
             | Commands::Rspec { .. }
@@ -3235,6 +3247,7 @@ mod tests {
             "paratest",
             "ecs",
             "pint",
+            "phpt",
             "uv",
         ];
 

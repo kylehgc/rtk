@@ -48,7 +48,7 @@ output *larger* and more correct. This fork does not claim to save more tokens t
 upstream — that is upstream's pitch. It claims to not lose your errors.
 
 <!-- FORK_DELTA_START -->
-**65 fixes in this fork that upstream does not have.** Each links to the commit,
+**61 fixes in this fork that upstream does not have.** Each links to the commit,
 where the original author is recorded. Adopted fixes come from community PRs that upstream
 has not merged — see the [adoption issues](https://github.com/kylehgc/rtk/issues?q=is%3Aissue+Adopt+upstream)
 for provenance.
@@ -83,8 +83,6 @@ upstream in another form.
 | fix(lint): guard known linter names from the on-disk path check, bound failure passthrough | [`3240075`](https://github.com/kylehgc/rtk/commit/3240075) |
 | fix(hook): delegate lint scripts to package managers | [`cae0f21`](https://github.com/kylehgc/rtk/commit/cae0f21) |
 | fix(lint): stop reading a bare path as a linter name | [`617ef8e`](https://github.com/kylehgc/rtk/commit/617ef8e) |
-| fix(diff): keep +/- markers at column 0 in condense_unified_diff | [`b008c53`](https://github.com/kylehgc/rtk/commit/b008c53) |
-| fix(git): keep +/-/@@ diff markers at column 0 in compact_diff | [`75ec765`](https://github.com/kylehgc/rtk/commit/75ec765) |
 | fix(prettier): enforce the failure invariant at every call site | [`59f2564`](https://github.com/kylehgc/rtk/commit/59f2564) |
 | fix(prettier): strip ANSI before parsing [warn] markers | [`6f4d9f7`](https://github.com/kylehgc/rtk/commit/6f4d9f7) |
 | fix(prettier): read check results from stderr, never report a failing check as success | [`34946b7`](https://github.com/kylehgc/rtk/commit/34946b7) |
@@ -93,8 +91,6 @@ upstream in another form.
 | fix(diff): compare bytes before claiming two files are identical | [`ce07aff`](https://github.com/kylehgc/rtk/commit/ce07aff) |
 | fix(hook): make gemini runner fail open on empty stdin | [`cf976df`](https://github.com/kylehgc/rtk/commit/cf976df) |
 | fix(hook): fail open when stdin payload stalls | [`04f881a`](https://github.com/kylehgc/rtk/commit/04f881a) |
-| fix(hooks): apply exclude_commands to the resolved tool, not just raw text | [`6871925`](https://github.com/kylehgc/rtk/commit/6871925) |
-| fix(hook): apply exclude_commands to head/tail rewrites | [`8a27c09`](https://github.com/kylehgc/rtk/commit/8a27c09) |
 | fix(read): honor --max-lines N as exact head count | [`653fb56`](https://github.com/kylehgc/rtk/commit/653fb56) |
 | fix(grep): stop -l/-m/-t shadowing native grep flags | [`0704f58`](https://github.com/kylehgc/rtk/commit/0704f58) |
 | fix(js): preserve failed command output in parser fallbacks | [`723bea4`](https://github.com/kylehgc/rtk/commit/723bea4) |
