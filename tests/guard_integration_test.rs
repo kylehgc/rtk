@@ -321,3 +321,28 @@ fn git_checkout_dirty_tree_error_keeps_file_list() {
         "dirty checkout failure should keep abort line: {combined:?}"
     );
 }
+
+#[test]
+fn git_diff_external_driver_output_is_not_dropped() {
+    // With `diff.external` set, git prints the driver's rendering instead of a
+    // unified diff, so `compact_diff` matches nothing. That used to print the
+    // stat followed by an empty `Changes:` section: the whole diff body gone,
+    // with no hint anything was missing. The driver output must reach stdout.
+    let dir = init_git_repo();
+    std::fs::write(dir.path().join("f.txt"), "one\ntwo\n").expect("write");
+    git_in_dir(dir.path(), &["add", "f.txt"]);
+    git_in_dir(dir.path(), &["commit", "-q", "-m", "add f"]);
+    std::fs::write(dir.path().join("f.txt"), "one\nchanged\n").expect("write");
+    // git runs the driver through sh with the path as its first argument.
+    git_in_dir(
+        dir.path(),
+        &["config", "diff.external", "echo EXTERNAL-DRIVER"],
+    );
+
+    let (out, code) = rtk_in_dir(dir.path(), &["git", "diff"]);
+    assert_eq!(code, Some(0), "git diff should succeed: {out:?}");
+    assert!(
+        out.contains("EXTERNAL-DRIVER f.txt"),
+        "external driver output must not be silently dropped: {out:?}"
+    );
+}
