@@ -48,7 +48,7 @@ output *larger* and more correct. This fork does not claim to save more tokens t
 upstream — that is upstream's pitch. It claims to not lose your errors.
 
 <!-- FORK_DELTA_START -->
-**60 fixes in this fork that upstream does not have.** Each links to the commit,
+**57 fixes in this fork that upstream does not have.** Each links to the commit,
 where the original author is recorded. Adopted fixes come from community PRs that upstream
 has not merged — see the [adoption issues](https://github.com/kylehgc/rtk/issues?q=is%3Aissue+Adopt+upstream)
 for provenance.
@@ -60,7 +60,6 @@ upstream in another form.
 
 | Fix | Commit |
 |---|---|
-| fix(diff): satisfy clippy int_plus_one in the adopted replay_classic test | [`7753ec7`](https://github.com/kylehgc/rtk/commit/7753ec7) |
 | fix(diff): stop reporting differing files as identical, and align by LCS | [`acbe88c`](https://github.com/kylehgc/rtk/commit/acbe88c) |
 | fix(jest): equals-form --reporters is greedy too; respect -- terminator | [`f0f34af`](https://github.com/kylehgc/rtk/commit/f0f34af) |
 | fix(jest): consume the values of a space-separated --reporters flag | [`b4aceb6`](https://github.com/kylehgc/rtk/commit/b4aceb6) |
@@ -89,8 +88,6 @@ upstream in another form.
 | fix(prettier): strip ANSI before parsing [warn] markers | [`6f4d9f7`](https://github.com/kylehgc/rtk/commit/6f4d9f7) |
 | fix(prettier): read check results from stderr, never report a failing check as success | [`34946b7`](https://github.com/kylehgc/rtk/commit/34946b7) |
 | fix(rewrite): never rewrite yadm to rtk git; keep bare git add a no-op | [`1d67272`](https://github.com/kylehgc/rtk/commit/1d67272) |
-| fix(diff): align by LCS instead of comparing line N to line N | [`54cb3a1`](https://github.com/kylehgc/rtk/commit/54cb3a1) |
-| fix(diff): compare bytes before claiming two files are identical | [`ce07aff`](https://github.com/kylehgc/rtk/commit/ce07aff) |
 | fix(hook): make gemini runner fail open on empty stdin | [`cf976df`](https://github.com/kylehgc/rtk/commit/cf976df) |
 | fix(hook): fail open when stdin payload stalls | [`04f881a`](https://github.com/kylehgc/rtk/commit/04f881a) |
 | fix(read): honor --max-lines N as exact head count | [`653fb56`](https://github.com/kylehgc/rtk/commit/653fb56) |

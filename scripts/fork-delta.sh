@@ -49,6 +49,9 @@ HEALED_SHAS=(
   a7998ad # 2026-09-01 merged upstream as 9d1c60a (patch-id differs, tsc_cmd.rs now byte-identical); proof test passes upstream
   791359c # 2026-09-01 superseded by upstream ca89767 requests_raw_log_output (--stat raw); proof test passes upstream
   9a8079a # 2026-09-01 the revert that removed 791359c/d88c1f4; restores upstream's code, nothing to advertise
+  ce07aff # 2026-09-01 early snapshot of upstream PR #3268, superseded by the refreshed adoption acbe88c (fork PR #153); count it once
+  54cb3a1 # 2026-09-01 early snapshot of upstream PR #3268, superseded by the refreshed adoption acbe88c (fork PR #153); count it once
+  7753ec7 # 2026-09-01 test-only clippy amendment to acbe88c; nothing to advertise
 )
 
 # ponytail: patch-id scan bounded to upstream commits since UPSTREAM_SINCE.
