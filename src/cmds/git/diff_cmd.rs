@@ -1,11 +1,14 @@
 //! Compares two files and shows only the changed lines.
 
-use crate::core::guard::{self, never_worse};
+use crate::core::guard::never_worse;
 use crate::core::tracking;
-use crate::core::tracking::estimate_tokens;
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
+
+const IDENTICAL_FILES_MESSAGE: &str = "[ok] Files are identical\n";
+const WHITESPACE_ONLY_DIFF_DETAIL: &str =
+    "   files differ only in whitespace or line endings (no line-content change)\n";
 
 /// Ultra-condensed diff - only changed lines, no context.
 /// Returns the diff-convention exit code: 0 if identical, 1 if files differ.
@@ -18,223 +21,104 @@ pub fn run(file1: &Path, file2: &Path, verbose: u8) -> Result<i32> {
 
     let content1 = fs::read_to_string(file1)?;
     let content2 = fs::read_to_string(file2)?;
+    let lines1: Vec<&str> = content1.lines().collect();
+    let lines2: Vec<&str> = content2.lines().collect();
+    let diff = compute_diff(&lines1, &lines2);
+    let fallback = format_classic_diff(&diff);
     let both_files = format!("{}\n---\n{}", content1, content2);
 
-    let comparison = compare_files(&content1, &content2);
-    let fallback = classic_fallback(&comparison);
-    let (rtk, exit_code) = render_diff(file1, file2, &comparison);
+    let (rtk, exit_code) = render_diff(file1, file2, &diff, content1 == content2);
 
-    // When `lines()` cannot see the difference, the raw fallback is two blobs
-    // that look the same, which is the outcome the rendered message exists to
-    // avoid. Fewer bytes does not make it the better answer there — but the
-    // message has to earn them: past `INVISIBLE_DIFF_TOKEN_ALLOWANCE` the raw
-    // text is short enough to read directly, so the guard keeps its say.
-    let affordable = invisible_message_affordable(&rtk, file1, file2, &both_files);
-    let shown = select_file_diff_output(&comparison, &fallback, &both_files, &rtk, affordable);
+    let shown = select_file_diff_output(&diff, &fallback, &rtk);
     print!("{}", shown);
     timer.track(
         &format!("diff {} {}", file1.display(), file2.display()),
         "rtk diff",
-        tracking_baseline(&fallback, &both_files, shown),
+        tracking_baseline(&diff, &fallback, &both_files, shown),
         shown,
     );
     Ok(exit_code)
 }
 
-/// What comparing the two files established, before anything is rendered.
-///
-/// The discriminator matters more than it looks. An empty change list is not a
-/// synonym for "identical": it is also what a difference `str::lines()` cannot
-/// see produces, and what every refusal to build an over-budget listing
-/// produces. Routing any of those through the identical branch reports two
-/// different files as the same and exits 0, which is the bug this module exists
-/// to close.
-enum FileComparison {
-    /// Byte-identical.
-    Identical,
-    /// The bytes differ but `lines()` does not. Carries the description of the
-    /// cause, since only the file contents can supply it.
-    InvisibleDifference(String),
-    /// A line-level comparison ran. Either it produced a change list, or it
-    /// refused to build one and said why in `DiffResult::unaligned`.
-    Lines(DiffResult),
+fn render_file_header(file1: &Path, file2: &Path) -> String {
+    format!("{} → {}\n", file1.display(), file2.display())
 }
 
-fn compare_files(content1: &str, content2: &str) -> FileComparison {
-    // Byte equality is the only safe basis for claiming identity, and it must be
-    // checked before `lines()` touches the input. `str::lines()` strips a
-    // trailing `\r` and treats the final newline as optional, so a CRLF-vs-LF or
-    // missing-trailing-newline difference collapses to identical line vectors.
-    // Reporting "identical" with exit 0 for files that differ silently passes
-    // any verification gate built on `diff`.
-    if content1 == content2 {
-        return FileComparison::Identical;
-    }
-
-    let lines1: Vec<&str> = content1.lines().collect();
-    let lines2: Vec<&str> = content2.lines().collect();
-    let diff = compute_diff(&lines1, &lines2);
-
-    if diff.unaligned.is_none() && diff.changes.is_empty() {
-        // Bytes differ, lines don't: the difference is exactly what `lines()`
-        // normalizes away. Name it rather than rendering an empty change list.
-        return FileComparison::InvisibleDifference(describe_invisible_difference(
-            content1, content2,
-        ));
-    }
-
-    FileComparison::Lines(diff)
-}
-
-/// What `diff` itself would have printed, or the empty string when there is no
-/// such output to compare against.
-///
-/// A classic diff exists exactly when a change list was built. Identical files
-/// make `diff` print nothing, an invisible difference has no lines to list, and
-/// a refused listing has no changes to format — for those three the baseline
-/// and the guard both fall back to the dump of both files.
-fn classic_fallback(comparison: &FileComparison) -> String {
-    match comparison {
-        FileComparison::Lines(diff) if diff.unaligned.is_none() => format_classic_diff(diff),
-        _ => String::new(),
-    }
-}
-
-/// Baseline the savings are measured against: what `diff` itself would have
-/// printed, so the recorded ratio compares like with like and can never go
-/// negative -- the guard already caps the shown output at the fallback.
-fn tracking_baseline<'a>(fallback: &'a str, both_files: &'a str, shown: &'a str) -> &'a str {
-    if !fallback.is_empty() {
-        return fallback;
-    }
-
-    // No classic diff to measure against, so the dump of both files stands in
-    // as the output that would otherwise have to be read. Two near-empty files
-    // can make that dump cheaper than the verdict line, which would book a loss
-    // against the cheapest possible answer.
-    if tracking::estimate_tokens(both_files) >= tracking::estimate_tokens(shown) {
-        both_files
-    } else {
-        shown
-    }
-}
-
-fn select_file_diff_output<'a>(
-    comparison: &FileComparison,
-    fallback: &'a str,
-    both_files: &'a str,
-    rendered: &'a str,
-    invisible_affordable: bool,
-) -> &'a str {
-    match comparison {
-        // `diff` prints nothing here, so there is no raw output to be worse
-        // than: the verdict line is the whole answer.
-        FileComparison::Identical => rendered,
-        FileComparison::InvisibleDifference(_) => {
-            if invisible_affordable {
-                rendered
-            } else {
-                never_worse(both_files, rendered)
+fn render_diff(file1: &Path, file2: &Path, diff: &DiffResult, bytes_equal: bool) -> (String, i32) {
+    if diff.changes.is_empty() {
+        // No change list was built. A refusal to build one is neither
+        // identity nor a whitespace-only difference, so it is answered first.
+        match &diff.unaligned {
+            Some(Unaligned::DifferingLines(n)) => {
+                return (
+                    format!(
+                        "{}   {} lines differ, too many to list; use `rtk proxy diff` for the full text\n",
+                        render_file_header(file1, file2),
+                        n
+                    ),
+                    1,
+                );
             }
+            Some(Unaligned::RegionBounds {
+                differing_floor,
+                first,
+                last1,
+                last2,
+            }) => {
+                // The floor is measured, not derived from the constant: every script
+                // shorter than the round the aligner gave up at was tried and
+                // failed, and an in-place rewrite is two operations. Where the
+                // differences sit is stated as line bounds in each file, because the
+                // size of that region is not a count of anything and a figure shaped
+                // like one invites reading it as the amount of change.
+                return (
+                    format!(
+                        "{}   at least {} lines differ, too different to align line by line\n   differences fall between lines {}-{} of {} and {}-{} of {}; use `rtk proxy diff` for the full text\n",
+                        render_file_header(file1, file2),
+                        differing_floor,
+                        first,
+                        last1,
+                        file1.display(),
+                        first,
+                        last2,
+                        file2.display()
+                    ),
+                    1,
+                );
+            }
+            Some(Unaligned::EditScript { removed, added }) => {
+                return (
+                    format!(
+                        "{}   -{} lines only in {}, +{} only in {}; too many to list, use `rtk proxy diff` for the full text\n",
+                        render_file_header(file1, file2),
+                        removed,
+                        file1.display(),
+                        added,
+                        file2.display()
+                    ),
+                    1,
+                );
+            }
+            None => {}
         }
-        // No change list means no classic diff, so the refusal is measured
-        // against the dump it is refusing to replace.
-        FileComparison::Lines(diff) if diff.unaligned.is_some() => {
-            never_worse(both_files, rendered)
-        }
-        FileComparison::Lines(_) => never_worse(fallback, rendered),
-    }
-}
 
-/// Whether the invisible-difference message may be shown above the raw
-/// fallback's token count.
-///
-/// Measured on what the message states, with the `file1 -> file2` header
-/// excluded: the caller typed those paths, so their length says nothing about
-/// whether the diagnostic is worth its tokens. Counting them made an absolute
-/// path pair eat the whole allowance and drop the message on exactly the
-/// invocations that most need it.
-fn invisible_message_affordable(rtk: &str, file1: &Path, file2: &Path, raw: &str) -> bool {
-    let header = file_pair_header(file1, file2);
-    let stated = rtk.strip_prefix(&header).unwrap_or(rtk);
-    estimate_tokens(stated) <= estimate_tokens(raw) + guard::INVISIBLE_DIFF_TOKEN_ALLOWANCE
-}
-
-/// The `file1 -> file2` line every non-identical render opens with.
-fn file_pair_header(file1: &Path, file2: &Path) -> String {
-    format!("{} \u{2192} {}\n", file1.display(), file2.display())
-}
-
-/// Renders the condensed file comparison and returns it with the
-/// diff-convention exit code (0 = identical, 1 = differences found).
-fn render_diff(file1: &Path, file2: &Path, comparison: &FileComparison) -> (String, i32) {
-    let diff = match comparison {
-        FileComparison::Identical => return ("[ok] Files are identical\n".to_string(), 0),
-        FileComparison::InvisibleDifference(cause) => {
-            return (
-                format!("{}   {}\n", file_pair_header(file1, file2), cause),
-                1,
-            );
+        if bytes_equal {
+            return (IDENTICAL_FILES_MESSAGE.to_string(), 0);
         }
-        FileComparison::Lines(diff) => diff,
-    };
-
-    match &diff.unaligned {
-        Some(Unaligned::DifferingLines(n)) => {
-            return (
-                format!(
-                    "{}   {} lines differ, too many to list; use `rtk proxy diff` for the full text\n",
-                    file_pair_header(file1, file2),
-                    n
-                ),
-                1,
-            );
-        }
-        Some(Unaligned::RegionBounds {
-            differing_floor,
-            first,
-            last1,
-            last2,
-        }) => {
-            // The floor is measured, not derived from the constant: every script
-            // shorter than the round the aligner gave up at was tried and
-            // failed, and an in-place rewrite is two operations. Where the
-            // differences sit is stated as line bounds in each file, because the
-            // size of that region is not a count of anything and a figure shaped
-            // like one invites reading it as the amount of change.
-            return (
-                format!(
-                    "{}   at least {} lines differ, too different to align line by line\n   differences fall between lines {}-{} of {} and {}-{} of {}; use `rtk proxy diff` for the full text\n",
-                    file_pair_header(file1, file2),
-                    differing_floor,
-                    first,
-                    last1,
-                    file1.display(),
-                    first,
-                    last2,
-                    file2.display()
-                ),
-                1,
-            );
-        }
-        Some(Unaligned::EditScript { removed, added }) => {
-            return (
-                format!(
-                    "{}   -{} lines only in {}, +{} only in {}; too many to list, use `rtk proxy diff` for the full text\n",
-                    file_pair_header(file1, file2),
-                    removed,
-                    file1.display(),
-                    added,
-                    file2.display()
-                ),
-                1,
-            );
-        }
-        None => {}
+        // `str::lines()` strips `\r` and drops a trailing newline, so these
+        // byte-level differences can leave no line changes to render.
+        return (
+            format!(
+                "{}{}",
+                render_file_header(file1, file2),
+                WHITESPACE_ONLY_DIFF_DETAIL
+            ),
+            1,
+        );
     }
 
     let mut rtk = String::new();
-    rtk.push_str(&file_pair_header(file1, file2));
+    rtk.push_str(&render_file_header(file1, file2));
     rtk.push_str(&format!(
         "   +{} added, -{} removed, ~{} modified\n\n",
         diff.added, diff.removed, diff.modified
@@ -286,82 +170,6 @@ fn frame_legend(diff: &DiffResult, file1: &Path, file2: &Path) -> Option<String>
         file1.display(),
         file2.display()
     ))
-}
-
-/// 1-based numbers of the lines that `content` terminates with CRLF.
-///
-/// Positions, not a count: two files can hold the same number of CRLF
-/// terminators at different lines, and a count alone cannot tell them apart.
-fn crlf_line_numbers(content: &str) -> Vec<usize> {
-    // Only the newline-terminated part has line terminators to classify.
-    // `split` hands back an unterminated tail as its own segment, so a file
-    // ending in a bare `\r` would otherwise count a CRLF that isn't there.
-    let terminated = match content.rfind('\n') {
-        Some(i) => &content[..=i],
-        None => "",
-    };
-    terminated
-        .split('\n')
-        .enumerate()
-        .filter(|(_, segment)| segment.ends_with('\r'))
-        .map(|(i, _)| i + 1)
-        .collect()
-}
-
-/// Describe a difference that a line-based diff cannot see.
-///
-/// Reached only when the bytes differ but `lines()` yields identical vectors,
-/// which narrows the cause to the two things `lines()` normalizes: a `\r`
-/// before the newline, and the presence of the final newline. Rendering the
-/// usual `~ 12 foo → foo` change list here would show two visually identical
-/// strings, so state the cause instead.
-///
-/// Returns the cause alone; the caller supplies the `file1 -> file2` header.
-fn describe_invisible_difference(content1: &str, content2: &str) -> String {
-    let crlf1 = crlf_line_numbers(content1);
-    let crlf2 = crlf_line_numbers(content2);
-    let nl1 = content1.ends_with('\n');
-    let nl2 = content2.ends_with('\n');
-
-    let mut notes: Vec<String> = Vec::new();
-    if crlf1.len() != crlf2.len() {
-        notes.push(format!(
-            "line endings: {} CRLF vs {} CRLF",
-            crlf1.len(),
-            crlf2.len()
-        ));
-    } else if crlf1 != crlf2 {
-        // Equal counts, different placement. Printing the counts alone would
-        // show the same number on both sides, which reads as "no difference".
-        let line = crlf1
-            .iter()
-            .zip(&crlf2)
-            .find(|(l1, l2)| l1 != l2)
-            .map(|(l1, l2)| (*l1).min(*l2))
-            .unwrap_or(0);
-        notes.push(format!(
-            "line endings: {} CRLF on each side, first differing at line {}",
-            crlf1.len(),
-            line
-        ));
-    }
-    if nl1 != nl2 {
-        notes.push(format!(
-            "trailing newline: {} vs {}",
-            if nl1 { "present" } else { "absent" },
-            if nl2 { "present" } else { "absent" }
-        ));
-    }
-    if notes.is_empty() {
-        // Defensive: `lines()` normalizes only the `\r` before a newline and
-        // the final newline, so one of the checks above should have fired.
-        notes.push("cause outside the line-ending and trailing-newline checks".to_string());
-    }
-
-    // Deliberately avoids the word "identical". That string is the signal for
-    // the true-identity case, and a reader (or grep) scanning for it must not
-    // match a report about files that differ.
-    format!("differs, text matches ({})", notes.join("; "))
 }
 
 /// Run diff from stdin (piped command output)
@@ -633,6 +441,38 @@ fn format_line_range(start: usize, end: usize) -> String {
         start.to_string()
     } else {
         format!("{start},{end}")
+    }
+}
+
+/// Baseline the savings are measured against: what `diff` itself would have
+/// printed, so the recorded ratio compares like with like and can never go
+/// negative -- the guard already caps the shown output at the fallback.
+fn tracking_baseline<'a>(
+    diff: &DiffResult,
+    fallback: &'a str,
+    both_files: &'a str,
+    shown: &'a str,
+) -> &'a str {
+    if !diff.changes.is_empty() {
+        return fallback;
+    }
+
+    // Identical files: `diff` prints nothing, so the dump of both files
+    // stands in as the output that would otherwise have to be read. Two
+    // near-empty files can make that dump cheaper than the verdict line,
+    // which would book a loss against the cheapest possible answer.
+    if tracking::estimate_tokens(both_files) >= tracking::estimate_tokens(shown) {
+        both_files
+    } else {
+        shown
+    }
+}
+
+fn select_file_diff_output<'a>(diff: &DiffResult, raw: &'a str, rendered: &'a str) -> &'a str {
+    if diff.changes.is_empty() {
+        rendered
+    } else {
+        never_worse(raw, rendered)
     }
 }
 
@@ -1743,27 +1583,23 @@ fn condense_unified_diff_strict(diff: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// Compare two file contents and render the result, which is the path
-    /// `run` takes minus the guard and the tracking.
-    fn render_file_diff(
-        file1: &Path,
-        file2: &Path,
-        content1: &str,
-        content2: &str,
-    ) -> (String, i32) {
-        render_diff(file1, file2, &compare_files(content1, content2))
+    fn render_test_diff(file1: &str, file2: &str, content1: &str, content2: &str) -> (String, i32) {
+        let lines1: Vec<&str> = content1.lines().collect();
+        let lines2: Vec<&str> = content2.lines().collect();
+        let diff = compute_diff(&lines1, &lines2);
+        render_diff(
+            Path::new(file1),
+            Path::new(file2),
+            &diff,
+            content1 == content2,
+        )
     }
 
-    /// The change list `compare_files` produced, or a panic naming what it
-    /// produced instead.
+    /// The change list `compute_diff` produces for two file contents.
     fn changes_of(content1: &str, content2: &str) -> DiffResult {
-        match compare_files(content1, content2) {
-            FileComparison::Lines(diff) => diff,
-            FileComparison::Identical => panic!("expected a change list, files were identical"),
-            FileComparison::InvisibleDifference(cause) => {
-                panic!("expected a change list, got an invisible difference: {cause}")
-            }
-        }
+        let lines1: Vec<&str> = content1.lines().collect();
+        let lines2: Vec<&str> = content2.lines().collect();
+        compute_diff(&lines1, &lines2)
     }
 
     /// The filter's contract in one line, used throughout these tests:
@@ -2067,12 +1903,8 @@ mod tests {
         assert!(result.changes.is_empty());
         assert!(!result.positional);
 
-        let (out, code) = render_file_diff(
-            Path::new("a.txt"),
-            Path::new("b.txt"),
-            &a_lines.join("\n"),
-            &b_lines.join("\n"),
-        );
+        let (out, code) =
+            render_test_diff("a.txt", "b.txt", &a_lines.join("\n"), &b_lines.join("\n"));
         assert_eq!(code, 1);
         assert!(out.contains("20000 lines differ"), "got:\n{}", out);
         assert!(
@@ -2084,7 +1916,7 @@ mod tests {
 
     #[test]
     fn test_render_positional_fallback_says_so() {
-        // Covers `render_file_diff`, not what `run` prints: at near-total
+        // Covers `render_test_diff`, not what `run` prints: at near-total
         // rewrite the render exceeds raw and `never_worse` substitutes the two
         // files, taking the label with it. That threshold is far above the
         // densities this branch exists for (10,000 lines / 4,999 rewritten
@@ -2093,8 +1925,7 @@ mod tests {
         let content2: String = (0..2400)
             .map(|i| format!("line {} REWRITTEN\n", i))
             .collect();
-        let (out, code) =
-            render_file_diff(Path::new("a.txt"), Path::new("b.txt"), &content1, &content2);
+        let (out, code) = render_test_diff("a.txt", "b.txt", &content1, &content2);
 
         assert_eq!(code, 1);
         assert!(out.contains("paired by line position"), "got:\n{}", out);
@@ -2116,8 +1947,7 @@ mod tests {
         // rounds, so half of it is all that is proven.
         let content1: String = (0..2000).map(|i| format!("a{}\n", i)).collect();
         let content2: String = (0..2001).map(|i| format!("b{}\n", i)).collect();
-        let (out, _) =
-            render_file_diff(Path::new("a.txt"), Path::new("b.txt"), &content1, &content2);
+        let (out, _) = render_test_diff("a.txt", "b.txt", &content1, &content2);
 
         assert!(out.contains("at least 706 lines differ"), "got:\n{}", out);
         // The region is stated as line bounds in each file. A figure shaped
@@ -2151,8 +1981,7 @@ mod tests {
             .map(|l| format!("{}\n", l))
             .collect::<String>();
 
-        let (out, code) =
-            render_file_diff(Path::new("a.txt"), Path::new("b.txt"), &content1, &content2);
+        let (out, code) = render_test_diff("a.txt", "b.txt", &content1, &content2);
         assert_eq!(code, 1);
         assert!(out.contains("at least 706 lines differ"), "got:\n{}", out);
         assert!(
@@ -2542,20 +2371,14 @@ mod tests {
     fn test_render_reference_frames_are_labelled() {
         // `-` and `+` numbers come from different files; the legend appears
         // only when the output actually mixes them.
-        let (mixed, _) = render_file_diff(
-            Path::new("a.txt"),
-            Path::new("b.txt"),
-            "x\nAAAAAAAA\n",
-            "NEW\nx\nZZZZZZZZ\n",
-        );
+        let (mixed, _) = render_test_diff("a.txt", "b.txt", "x\nAAAAAAAA\n", "NEW\nx\nZZZZZZZZ\n");
         assert!(
             mixed.contains("(- numbered in a.txt, + in b.txt)"),
             "got:\n{}",
             mixed
         );
 
-        let (modified_only, _) =
-            render_file_diff(Path::new("a.txt"), Path::new("b.txt"), "a: 1\n", "a: 2\n");
+        let (modified_only, _) = render_test_diff("a.txt", "b.txt", "a: 1\n", "a: 2\n");
         assert!(
             !modified_only.contains("numbered in"),
             "no legend when nothing mixes frames, got:\n{}",
@@ -2569,9 +2392,9 @@ mod tests {
         // as `-` and `+` do. Gating the legend on a `-` being present left this
         // shape bare: `value = alpha2` is at line 5 of b.txt, not the 4 the `~`
         // shows, and nothing said which file the number belonged to.
-        let (out, _) = render_file_diff(
-            Path::new("a.txt"),
-            Path::new("b.txt"),
+        let (out, _) = render_test_diff(
+            "a.txt",
+            "b.txt",
             "a\nb\nc\nvalue = alpha\n",
             "a\nEXTRA\nb\nc\nvalue = alpha2\n",
         );
@@ -2590,9 +2413,9 @@ mod tests {
         // describes different output than the reader is looking at is worse
         // than none: with no `-` on screen it announced a `-` frame with no
         // lines in it and said nothing about the `~` lines that were there.
-        let (added_and_modified, _) = render_file_diff(
-            Path::new("a.txt"),
-            Path::new("b.txt"),
+        let (added_and_modified, _) = render_test_diff(
+            "a.txt",
+            "b.txt",
             "a\nb\nc\nvalue = alpha\n",
             "a\nEXTRA\nb\nc\nvalue = alpha2\n",
         );
@@ -2608,12 +2431,8 @@ mod tests {
         );
 
         // A `-` with no `~`: the legend names the `-` alone.
-        let (added_and_removed, _) = render_file_diff(
-            Path::new("a.txt"),
-            Path::new("b.txt"),
-            "a\nb\nzzzz\n",
-            "a\nEXTRA\nb\nqqqq\n",
-        );
+        let (added_and_removed, _) =
+            render_test_diff("a.txt", "b.txt", "a\nb\nzzzz\n", "a\nEXTRA\nb\nqqqq\n");
         assert!(
             added_and_removed.contains("(- numbered in a.txt, + in b.txt)"),
             "got:\n{}",
@@ -2621,9 +2440,9 @@ mod tests {
         );
 
         // Both frames on screen: the legend names both.
-        let (all_three, _) = render_file_diff(
-            Path::new("a.txt"),
-            Path::new("b.txt"),
+        let (all_three, _) = render_test_diff(
+            "a.txt",
+            "b.txt",
             "a\nb\nzzzz\nvalue = alpha\n",
             "a\nEXTRA\nb\nqqqq\nvalue = alpha2\n",
         );
@@ -2637,8 +2456,7 @@ mod tests {
     #[test]
     fn test_render_added_only_needs_no_frame_legend() {
         // Every listed line comes from file2. One frame, no note.
-        let (out, _) =
-            render_file_diff(Path::new("a.txt"), Path::new("b.txt"), "a\nb\n", "a\nNEW\nb\n");
+        let (out, _) = render_test_diff("a.txt", "b.txt", "a\nb\n", "a\nNEW\nb\n");
 
         assert!(out.contains("+1 added, -0 removed, ~0 modified"), "got:\n{}", out);
         assert!(
@@ -2776,8 +2594,7 @@ mod tests {
                 }
             })
             .collect();
-        let (out, code) =
-            render_file_diff(Path::new("a.txt"), Path::new("b.txt"), &content1, &content2);
+        let (out, code) = render_test_diff("a.txt", "b.txt", &content1, &content2);
 
         assert_eq!(code, 1);
         assert!(
@@ -2854,8 +2671,7 @@ mod tests {
         // reader to read two identical numbers as belonging to different files.
         let content1: String = (0..2400).map(|i| format!("aaa{}\n", i)).collect();
         let content2: String = (0..2400).map(|i| format!("zzz{}\n", i)).collect();
-        let (out, _) =
-            render_file_diff(Path::new("a.txt"), Path::new("b.txt"), &content1, &content2);
+        let (out, _) = render_test_diff("a.txt", "b.txt", &content1, &content2);
 
         assert!(out.contains("paired by line position"), "got:\n{}", out);
         assert!(out.contains("-   1 aaa0"), "got:\n{}", out);
@@ -2937,8 +2753,7 @@ mod tests {
                 _ => format!("line {}\n", i),
             })
             .collect();
-        let (out, code) =
-            render_file_diff(Path::new("a.txt"), Path::new("b.txt"), &content1, &content2);
+        let (out, code) = render_test_diff("a.txt", "b.txt", &content1, &content2);
 
         assert_eq!(code, 1);
         assert!(out.contains("+0 added, -0 removed, ~2 modified"), "got:\n{}", out);
@@ -2949,8 +2764,7 @@ mod tests {
     fn test_render_past_edit_distance_cap_names_the_region_as_a_region() {
         let content1: String = (0..2001).map(|i| format!("a{}\n", i)).collect();
         let content2: String = (0..2002).map(|i| format!("b{}\n", i)).collect();
-        let (out, code) =
-            render_file_diff(Path::new("a.txt"), Path::new("b.txt"), &content1, &content2);
+        let (out, code) = render_test_diff("a.txt", "b.txt", &content1, &content2);
 
         assert_eq!(code, 1);
         assert!(
@@ -2963,165 +2777,7 @@ mod tests {
         assert!(!out.contains("text matches"), "got:\n{}", out);
     }
 
-    #[test]
-    fn test_crlf_line_numbers_ignores_an_unterminated_tail() {
-        // A file ending in a bare `\r` has no newline there, so that `\r` is
-        // content rather than half a CRLF terminator.
-        assert_eq!(crlf_line_numbers("x\r\ny\r"), vec![1]);
-        assert_eq!(crlf_line_numbers("x\ny\r"), Vec::<usize>::new());
-        assert_eq!(crlf_line_numbers("a\r\nb\r\n"), vec![1, 2]);
-
-        let (out, _) =
-            render_file_diff(Path::new("a.txt"), Path::new("b.txt"), "x\r\ny\r", "x\ny\r");
-        assert!(out.contains("1 CRLF vs 0 CRLF"), "got:\n{}", out);
-    }
-
-    #[test]
-    fn test_invisible_message_affordability_ignores_path_length() {
-        // A three-line CSV saved once on Windows and once on Unix. The message
-        // is the only thing that distinguishes the two blobs, so path length
-        // must not be what disqualifies it.
-        let content1 = "a,b\nc,d\ne,f\n";
-        let content2 = "a,b\r\nc,d\r\ne,f\r\n";
-        let raw = format!("{}\n---\n{}", content1, content2);
-
-        for (f1, f2) in [
-            ("e.txt", "f.txt"),
-            (
-                "/home/user/projects/rtk/tests/fixtures/expected_output.csv",
-                "/home/user/projects/rtk/tests/fixtures/actual_output.csv",
-            ),
-        ] {
-            let (p1, p2) = (Path::new(f1), Path::new(f2));
-            let (rtk, _) = render_file_diff(p1, p2, content1, content2);
-            assert!(
-                invisible_message_affordable(&rtk, p1, p2, &raw),
-                "{} vs {} must not price the message out",
-                f1,
-                f2
-            );
-        }
-    }
-
-    #[test]
-    fn test_invisible_message_affordability_still_has_a_ceiling() {
-        // The exception stays bounded by what the message says. Excluding the
-        // header raised the effective ceiling — `"a\n"` vs `"a"` now shows the
-        // note where it used to show raw — but the longest note form against a
-        // 16-byte pair is still priced out.
-        let (p1, p2) = (Path::new("a"), Path::new("b"));
-        let (content1, content2) = ("a\r\nb\n", "a\nb\r\n");
-        let raw = format!("{}\n---\n{}", content1, content2);
-        let (rtk, _) = render_file_diff(p1, p2, content1, content2);
-
-        assert!(rtk.contains("first differing at line 1"), "got:\n{}", rtk);
-        assert!(
-            !invisible_message_affordable(&rtk, p1, p2, &raw),
-            "got:\n{}",
-            rtk
-        );
-    }
-
-    #[test]
-    fn test_describe_invisible_difference_never_prints_equal_byte_counts() {
-        // Same CRLF count on both sides, different placement. The old fallback
-        // printed "5 vs 5 bytes", which reads as "no difference at all".
-        let (out, code) =
-            render_file_diff(Path::new("a.txt"), Path::new("b.txt"), "a\r\nb\n", "a\nb\r\n");
-
-        assert_eq!(code, 1);
-        assert!(!out.contains("5 vs 5 bytes"), "got:\n{}", out);
-        assert!(
-            out.contains("1 CRLF on each side, first differing at line 1"),
-            "got:\n{}",
-            out
-        );
-    }
-
-    // --- classic diff fallback, baseline and guard routing ---
-
-    #[test]
-    fn test_never_worse_fallback_is_a_classic_diff() {
-        let comparison = compare_files("alpha beta\n", "alpha zzzz\n");
-        let fallback = classic_fallback(&comparison);
-        let (rendered, code) = render_diff(Path::new("before"), Path::new("after"), &comparison);
-        let shown = select_file_diff_output(&comparison, &fallback, "", &rendered, false);
-
-        assert_eq!(code, 1);
-        assert!(shown.contains("1c1"), "got:\n{}", shown);
-        assert!(shown.contains("< alpha beta"));
-        assert!(shown.contains("\n---\n"));
-        assert!(shown.contains("> alpha zzzz"));
-    }
-
-    #[test]
-    fn test_tracking_baseline_never_books_a_loss() {
-        // Two unrelated files: the classic diff carries both of them plus the
-        // "< " / "> " markers, so it is bigger than a plain dump. Measuring
-        // against the dump used to record negative savings.
-        let content1: String = (0..40).map(|i| format!("old line {i}\n")).collect();
-        let content2: String = (0..40).map(|i| format!("brand new content {i}\n")).collect();
-        let both_files = format!("{}\n---\n{}", content1, content2);
-
-        let comparison = compare_files(&content1, &content2);
-        let fallback = classic_fallback(&comparison);
-        let (rendered, _) = render_diff(Path::new("a"), Path::new("b"), &comparison);
-        let shown = select_file_diff_output(&comparison, &fallback, &both_files, &rendered, false);
-        let baseline = tracking_baseline(&fallback, &both_files, shown);
-
-        assert!(
-            tracking::estimate_tokens(baseline) >= tracking::estimate_tokens(shown),
-            "baseline {} < shown {} would record negative savings",
-            tracking::estimate_tokens(baseline),
-            tracking::estimate_tokens(shown)
-        );
-    }
-
-    #[test]
-    fn test_tracking_baseline_identical_files_use_both_files() {
-        let both_files = "a: 1\nb: 2\n\n---\na: 1\nb: 2\n";
-        let shown = "[ok] Files are identical\n";
-
-        assert_eq!(
-            tracking_baseline("", both_files, shown),
-            both_files,
-            "identical files should still measure against the dump"
-        );
-    }
-
-    #[test]
-    fn test_tracking_baseline_empty_files_do_not_book_a_loss() {
-        // Both files empty: the dump is shorter than the verdict line.
-        let shown = "[ok] Files are identical\n";
-
-        assert_eq!(tracking_baseline("", "\n---\n", shown), shown);
-    }
-
-    #[test]
-    fn test_identical_files_keep_the_success_message() {
-        let comparison = compare_files("same\n", "same\n");
-        let rendered = "[ok] Files are identical\n";
-
-        assert_eq!(
-            select_file_diff_output(&comparison, "", "", rendered, false),
-            rendered
-        );
-    }
-
-    #[test]
-    fn test_classic_diff_covers_modified_line_boundary_cases() {
-        for (old, new) in [
-            ("alpha beta gamma delta", "alpha beta XXXXX delta"),
-            ("alpha beta gamma", "alpha beta"),
-            ("alpha beta gamma delta", "XXXXX beta gamma delta"),
-        ] {
-            let diff = changes_of(&format!("{old}\n"), &format!("{new}\n"));
-            let fallback = format_classic_diff(&diff);
-
-            assert!(fallback.contains(&format!("< {old}")), "got:\n{fallback}");
-            assert!(fallback.contains(&format!("> {new}")), "got:\n{fallback}");
-        }
-    }
+    // --- classic diff hunks and listing refusals ---
 
     #[test]
     fn test_classic_diff_groups_a_replacement_after_a_shift() {
@@ -3171,10 +2827,15 @@ mod tests {
         let content2: String = (0..60_000).map(|i| format!("b{}\n", i)).collect();
         let both_files = format!("{}\n---\n{}", content1, content2);
 
-        let comparison = compare_files(&content1, &content2);
-        let fallback = classic_fallback(&comparison);
-        let (rendered, code) = render_diff(Path::new("a.txt"), Path::new("b.txt"), &comparison);
-        let shown = select_file_diff_output(&comparison, &fallback, &both_files, &rendered, false);
+        let diff = changes_of(&content1, &content2);
+        let fallback = format_classic_diff(&diff);
+        let (rendered, code) = render_diff(
+            Path::new("a.txt"),
+            Path::new("b.txt"),
+            &diff,
+            content1 == content2,
+        );
+        let shown = select_file_diff_output(&diff, &fallback, &rendered);
 
         assert_eq!(code, 1, "files that differ must exit 1");
         assert!(
@@ -3189,33 +2850,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_invisible_difference_is_not_reported_as_identical() {
-        let comparison = compare_files("x\r\ny\r\n", "x\ny\n");
-        let fallback = classic_fallback(&comparison);
-        let (rendered, code) = render_diff(Path::new("a.txt"), Path::new("b.txt"), &comparison);
-
-        assert_eq!(code, 1);
-        assert!(fallback.is_empty(), "no classic diff exists here");
-        assert_eq!(
-            select_file_diff_output(&comparison, &fallback, "x\r\ny\r\n\n---\nx\ny\n", &rendered, true),
-            rendered,
-            "an affordable invisible-difference message survives the guard"
-        );
-    }
-
-    // --- render_file_diff (issue #2364 regression) ---
+    // --- render_diff (issue #2364 regression) ---
 
     #[test]
     fn test_render_modified_only_yaml_not_identical() {
         // "a: 1" vs "a: 2" is classified as modified (similarity > 0.5);
         // the identical check must not ignore modified-only diffs.
-        let (out, code) = render_file_diff(
-            Path::new("one.yaml"),
-            Path::new("two.yaml"),
-            "a: 1\n",
-            "a: 2\n",
-        );
+        let (out, code) = render_test_diff("one.yaml", "two.yaml", "a: 1\n", "a: 2\n");
         assert!(
             !out.contains("identical"),
             "modified-only diff reported as identical:\n{}",
@@ -3228,86 +2869,8 @@ mod tests {
     }
 
     #[test]
-    fn test_render_crlf_difference_is_not_identical() {
-        // `str::lines()` strips a trailing `\r`, so a CRLF-vs-LF file pair used
-        // to collapse to identical line vectors and report "[ok] Files are
-        // identical" with exit 0. `cmp` says these differ at byte 6.
-        let (out, code) = render_file_diff(
-            Path::new("a.txt"),
-            Path::new("b.txt"),
-            "keep1\nkeep2\nkeep3\n",
-            "keep1\r\nkeep2\r\nkeep3\n",
-        );
-        assert!(
-            !out.contains("identical"),
-            "CRLF-vs-LF reported as identical:\n{}",
-            out
-        );
-        assert_eq!(code, 1, "differing files must exit 1");
-        assert!(out.contains("0 CRLF vs 2 CRLF"), "got: {}", out);
-    }
-
-    #[test]
-    fn test_render_trailing_newline_difference_is_not_identical() {
-        // The other thing `lines()` normalizes: the final newline is optional.
-        let (out, code) = render_file_diff(
-            Path::new("a.txt"),
-            Path::new("b.txt"),
-            "keep1\nkeep2\n",
-            "keep1\nkeep2",
-        );
-        assert!(
-            !out.contains("identical"),
-            "trailing-newline diff reported as identical:\n{}",
-            out
-        );
-        assert_eq!(code, 1);
-        assert!(out.contains("trailing newline: present vs absent"), "got: {}", out);
-    }
-
-    #[test]
-    fn test_render_byte_identical_is_identical() {
-        // The guard must not flip the true-identity case to a false positive.
-        let (out, code) = render_file_diff(
-            Path::new("a.txt"),
-            Path::new("b.txt"),
-            "keep1\nkeep2\n",
-            "keep1\nkeep2\n",
-        );
-        assert!(out.contains("[ok] Files are identical"));
-        assert_eq!(code, 0);
-    }
-
-    #[test]
-    fn test_render_partial_crlf_matches_reported_repro() {
-        // The shape actually observed: a 200-line file where a Windows editor
-        // touched 24 lines. Text identical, bytes differ, `cmp` exits 1.
-        let plain: String = (0..200).map(|i| format!("line {} content here\n", i)).collect();
-        let mixed: String = (0..200)
-            .map(|i| {
-                if (50..74).contains(&i) {
-                    format!("line {} content here\r\n", i)
-                } else {
-                    format!("line {} content here\n", i)
-                }
-            })
-            .collect();
-        assert_ne!(plain, mixed, "fixture must actually differ");
-
-        let (out, code) = render_file_diff(Path::new("a.txt"), Path::new("b.txt"), &plain, &mixed);
-        assert!(!out.contains("identical"), "got: {}", out);
-        assert_eq!(code, 1, "must exit 1 so a `diff` gate fails");
-        assert!(out.contains("0 CRLF vs 24 CRLF"), "got: {}", out);
-    }
-
-    #[test]
     fn test_render_modified_only_json_not_identical() {
-        let (out, code) = render_file_diff(
-            Path::new("j1.json"),
-            Path::new("j2.json"),
-            "{\"a\": 1}\n",
-            "{\"a\": 2}\n",
-        );
+        let (out, code) = render_test_diff("j1.json", "j2.json", "{\"a\": 1}\n", "{\"a\": 2}\n");
         assert!(
             !out.contains("identical"),
             "modified-only diff reported as identical:\n{}",
@@ -3318,21 +2881,150 @@ mod tests {
 
     #[test]
     fn test_render_identical_files_exit_zero() {
-        let (out, code) = render_file_diff(
-            Path::new("a.yaml"),
-            Path::new("b.yaml"),
-            "a: 1\nb: 2\n",
-            "a: 1\nb: 2\n",
-        );
+        let (out, code) =
+            render_test_diff("a.yaml", "b.yaml", "a: 1\nb: 2\n", "a: 1\nb: 2\n");
         assert!(out.contains("[ok] Files are identical"));
         assert_eq!(code, 0);
     }
 
     #[test]
     fn test_render_added_removed_exit_one() {
-        let (out, code) = render_file_diff(Path::new("t1.txt"), Path::new("t2.txt"), "x\n", "y\n");
+        let (out, code) = render_test_diff("t1.txt", "t2.txt", "x\n", "y\n");
         assert!(out.contains("+1 added, -1 removed"));
         assert_eq!(code, 1);
+    }
+
+    // --- byte-different but line-equal files must not be "identical" (issue #3469) ---
+
+    #[test]
+    fn test_render_crlf_vs_lf_not_identical() {
+        let (out, code) = render_test_diff(
+            "a.txt",
+            "b.txt",
+            "alpha\nbeta\n",
+            "alpha\r\nbeta\r\n",
+        );
+        assert!(
+            !out.contains("identical"),
+            "CRLF-vs-LF difference reported as identical:\n{}",
+            out
+        );
+        assert!(
+            out.contains("whitespace or line endings"),
+            "expected the whitespace/line-ending message, got:\n{}",
+            out
+        );
+        assert_eq!(code, 1, "byte-different files must exit 1 (diff convention)");
+    }
+
+    #[test]
+    fn test_render_trailing_newline_not_identical() {
+        let (out, code) = render_test_diff("a.txt", "b.txt", "abc", "abc\n");
+        assert!(
+            !out.contains("identical"),
+            "trailing-newline difference reported as identical:\n{}",
+            out
+        );
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn test_render_byte_identical_exit_zero_with_crlf() {
+        let (out, code) = render_test_diff("a.txt", "b.txt", "a\r\nb\r\n", "a\r\nb\r\n");
+        assert!(out.contains("[ok] Files are identical"));
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn test_never_worse_fallback_is_a_classic_diff() {
+        let diff = compute_diff(&["alpha beta"], &["alpha zzzz"]);
+        let fallback = format_classic_diff(&diff);
+        let (rendered, code) =
+            render_diff(Path::new("before"), Path::new("after"), &diff, false);
+        let shown = select_file_diff_output(&diff, &fallback, &rendered);
+
+        assert_eq!(code, 1);
+        assert!(shown.contains("1c1"));
+        assert!(shown.contains("< alpha beta"));
+        assert!(shown.contains("\n---\n"));
+        assert!(shown.contains("> alpha zzzz"));
+    }
+
+    #[test]
+    fn test_tracking_baseline_never_books_a_loss() {
+        // Two unrelated files: the classic diff carries both of them plus the
+        // "< " / "> " markers, so it is bigger than a plain dump. Measuring
+        // against the dump used to record negative savings.
+        let old: Vec<String> = (0..40).map(|i| format!("old line {i}")).collect();
+        let new: Vec<String> = (0..40).map(|i| format!("brand new content {i}")).collect();
+        let r1: Vec<&str> = old.iter().map(|s| s.as_str()).collect();
+        let r2: Vec<&str> = new.iter().map(|s| s.as_str()).collect();
+
+        let diff = compute_diff(&r1, &r2);
+        let fallback = format_classic_diff(&diff);
+        let old_content = old.join("\n");
+        let new_content = new.join("\n");
+        let both_files = format!("{}\n---\n{}", old_content, new_content);
+        let (rendered, _) = render_diff(
+            Path::new("a"),
+            Path::new("b"),
+            &diff,
+            old_content == new_content,
+        );
+        let shown = select_file_diff_output(&diff, &fallback, &rendered);
+        let baseline = tracking_baseline(&diff, &fallback, &both_files, shown);
+
+        assert!(
+            tracking::estimate_tokens(baseline) >= tracking::estimate_tokens(shown),
+            "baseline {} < shown {} would record negative savings",
+            tracking::estimate_tokens(baseline),
+            tracking::estimate_tokens(shown)
+        );
+    }
+
+    #[test]
+    fn test_tracking_baseline_identical_files_use_both_files() {
+        let diff = compute_diff(&["a: 1", "b: 2"], &["a: 1", "b: 2"]);
+        let both_files = "a: 1\nb: 2\n\n---\na: 1\nb: 2\n";
+        let shown = "[ok] Files are identical\n";
+
+        assert_eq!(
+            tracking_baseline(&diff, "", both_files, shown),
+            both_files,
+            "identical files should still measure against the dump"
+        );
+    }
+
+    #[test]
+    fn test_tracking_baseline_empty_files_do_not_book_a_loss() {
+        // Both files empty: the dump is shorter than the verdict line.
+        let diff = compute_diff(&[], &[]);
+        let shown = "[ok] Files are identical\n";
+
+        assert_eq!(tracking_baseline(&diff, "", "\n---\n", shown), shown);
+    }
+
+    #[test]
+    fn test_identical_files_keep_the_success_message() {
+        let diff = compute_diff(&["same"], &["same"]);
+        let rendered = "[ok] Files are identical\n";
+
+        assert_eq!(select_file_diff_output(&diff, "", rendered), rendered);
+    }
+
+    #[test]
+    fn test_classic_diff_covers_modified_line_boundary_cases() {
+        for (old, new) in [
+            ("alpha beta gamma delta", "alpha beta XXXXX delta"),
+            ("alpha beta gamma", "alpha beta"),
+            ("alpha beta gamma delta", "XXXXX beta gamma delta"),
+        ] {
+            let diff = compute_diff(&[old], &[new]);
+            let fallback = format_classic_diff(&diff);
+
+            assert!(fallback.contains(&format!("< {old}")));
+            assert!(fallback.contains(&format!("> {new}")));
+        }
     }
 
     // --- condense_unified_diff ---

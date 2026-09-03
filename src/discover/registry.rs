@@ -169,7 +169,14 @@ pub fn classify_command(cmd: &str) -> Classification {
         // Extract subcommand for savings override and status detection
         let (savings, status) = if let Some(caps) = COMPILED[idx].captures(cmd_clean) {
             if let Some(sub) = caps.get(1) {
-                let subcmd = sub.as_str();
+                // Collapse internal whitespace so a two-word capture ("pm  ls")
+                // still matches its single-spaced key in the tables below.
+                let subcmd_owned = sub
+                    .as_str()
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let subcmd = subcmd_owned.as_str();
                 // Check if this subcommand has a special status
                 let status = rule
                     .subcmd_status
@@ -178,13 +185,20 @@ pub fn classify_command(cmd: &str) -> Classification {
                     .map(|(_, st)| *st)
                     .unwrap_or(super::report::RtkStatus::Existing);
 
-                // Check if this subcommand has custom savings
-                let savings = rule
-                    .subcmd_savings
-                    .iter()
-                    .find(|(s, _)| *s == subcmd)
-                    .map(|(_, pct)| *pct)
-                    .unwrap_or(rule.savings_pct);
+                // A passthrough subcommand runs unfiltered, so it cannot save
+                // anything. Deriving that from the status keeps the two from
+                // drifting: a rule that marks a subcommand passthrough without
+                // also zeroing its entry in `subcmd_savings` would otherwise
+                // inherit the rule's headline percentage.
+                let savings = if status == super::report::RtkStatus::Passthrough {
+                    0.0
+                } else {
+                    rule.subcmd_savings
+                        .iter()
+                        .find(|(s, _)| *s == subcmd)
+                        .map(|(_, pct)| *pct)
+                        .unwrap_or(rule.savings_pct)
+                };
 
                 (savings, status)
             } else {
@@ -571,6 +585,25 @@ pub fn rewrite_command(
     excluded: &[String],
     transparent_prefixes: &[String],
 ) -> Option<String> {
+    let compiled = compile_exclude_patterns(excluded);
+    let normalized_prefixes = normalize_transparent_prefixes(transparent_prefixes);
+    rewrite_command_precompiled(cmd, &compiled, &normalized_prefixes)
+}
+
+/// Core of `rewrite_command`, taking already-compiled exclude patterns and
+/// already-normalized transparent prefixes so a caller checking many commands
+/// against the same config in a loop can compile once and reuse — instead of
+/// recompiling `exclude_commands` regexes on every single call. `rewrite_command`
+/// itself is the right entry point for a one-off check (real hook invocations,
+/// `rtk rewrite`, tests); this exists for `rtk discover`'s estimate-coverage
+/// fallback, which calls this once per historical command scanned (the same
+/// compile-once-per-run pattern this PR already applies to permission rules —
+/// see `discover::PermissionRules` — and hook-install status).
+pub(crate) fn rewrite_command_precompiled(
+    cmd: &str,
+    compiled: &[ExcludePattern],
+    normalized_prefixes: &[String],
+) -> Option<String> {
     // Bash joins `\<NL>` with nothing, so `<<` or `$((` can arrive split across
     // a continuation; the space-join below would erase them (#3188 review).
     if cmd.contains('\\') {
@@ -594,14 +627,11 @@ pub fn rewrite_command(
         return None;
     }
 
-    let compiled = compile_exclude_patterns(excluded);
-    let normalized_prefixes = normalize_transparent_prefixes(transparent_prefixes);
-
     if trimmed.contains('\n') {
-        return rewrite_multiline_block(trimmed, &compiled, &normalized_prefixes);
+        return rewrite_multiline_block(trimmed, compiled, normalized_prefixes);
     }
 
-    rewrite_single(trimmed, &compiled, &normalized_prefixes)
+    rewrite_single(trimmed, compiled, normalized_prefixes)
 }
 
 /// Rewrite one logical command line (no unquoted newlines).
@@ -1213,12 +1243,12 @@ fn pipeline_final_command_is_safe(rtk_cmd: &str, cmd: &str) -> bool {
     !matches!(rtk_cmd, "rtk grep" | "rtk rg") || !search_uses_pattern_file(cmd)
 }
 
-enum ExcludePattern {
+pub(crate) enum ExcludePattern {
     Regex(Regex),
     Prefix(String),
 }
 
-fn compile_exclude_patterns(patterns: &[String]) -> Vec<ExcludePattern> {
+pub(crate) fn compile_exclude_patterns(patterns: &[String]) -> Vec<ExcludePattern> {
     patterns
         .iter()
         .filter_map(|pattern| {
@@ -1249,7 +1279,7 @@ fn compile_exclude_patterns(patterns: &[String]) -> Vec<ExcludePattern> {
         .collect()
 }
 
-fn normalize_transparent_prefixes(prefixes: &[String]) -> Vec<String> {
+pub(crate) fn normalize_transparent_prefixes(prefixes: &[String]) -> Vec<String> {
     let mut normalized: Vec<String> = prefixes
         .iter()
         .map(|prefix| prefix.trim())
@@ -2185,12 +2215,14 @@ mod tests {
 
     #[test]
     fn test_classify_cargo_fmt_passthrough() {
+        // Passthrough: `cargo fmt` runs unfiltered, so it saves nothing even
+        // though the rule's other subcommands do.
         assert_eq!(
             classify_command("cargo fmt"),
             Classification::Supported {
                 rtk_equivalent: "rtk cargo",
                 category: "Cargo",
-                estimated_savings_pct: 80.0,
+                estimated_savings_pct: 0.0,
                 status: RtkStatus::Passthrough,
             }
         );
@@ -3494,6 +3526,73 @@ mod tests {
             rewrite_command_no_prefixes("docker run --rm ubuntu bash", &[]),
             Some("rtk docker run --rm ubuntu bash".into())
         );
+    }
+
+    #[test]
+    fn test_rewrite_bun_x_space_form() {
+        assert_eq!(
+            rewrite_command_no_prefixes("bun x tsc --noEmit", &[]),
+            Some("rtk bun x tsc --noEmit".into())
+        );
+    }
+
+    /// Status and savings a rule assigns to a command, for the passthrough
+    /// accounting tests below.
+    fn status_and_savings(cmd: &str) -> (RtkStatus, f64) {
+        match classify_command(cmd) {
+            Classification::Supported {
+                status,
+                estimated_savings_pct,
+                ..
+            } => (status, estimated_savings_pct),
+            other => panic!("expected Supported for {cmd}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_deno_pattern_does_not_match_subcommand_prefixes() {
+        // Without a trailing \b, "deno taskfoo" matches the "task" alternative.
+        assert_eq!(rewrite_command_no_prefixes("deno taskfoo", &[]), None);
+        assert_eq!(rewrite_command_no_prefixes("deno testify", &[]), None);
+        assert_eq!(
+            rewrite_command_no_prefixes("deno task build", &[]),
+            Some("rtk deno task build".into())
+        );
+    }
+
+    #[test]
+    fn test_passthrough_subcommands_claim_no_savings() {
+        // These run unfiltered, so discover must not credit them with the
+        // rule's headline savings. Asserting the percentage matters as much as
+        // the status: the two are separate fields and only the percentage
+        // reaches the projection.
+        for cmd in [
+            "deno install npm:cowsay",
+            "deno run main.ts",
+            "deno task build",
+            "bun pm cache rm",
+            "bun run dev",
+            "bun build ./index.ts",
+            "deno compile m.ts",
+            "cargo fmt",
+        ] {
+            let (status, savings) = status_and_savings(cmd);
+            assert_eq!(status, RtkStatus::Passthrough, "{cmd}");
+            assert_eq!(savings, 0.0, "{cmd}");
+        }
+
+        // The filtered forms are still credited.
+        let (status, savings) = status_and_savings("bun pm ls");
+        assert_eq!(status, RtkStatus::Existing);
+        assert_eq!(savings, 70.0);
+        let (status, savings) = status_and_savings("deno test");
+        assert_eq!(status, RtkStatus::Existing);
+        assert_eq!(savings, 90.0);
+    }
+
+    #[test]
+    fn test_rewrite_bun_unknown_subcommand_untouched() {
+        assert_eq!(rewrite_command_no_prefixes("bun xtask build", &[]), None);
     }
 
     #[test]
@@ -6158,6 +6257,36 @@ mod tests {
         assert_eq!(
             normalize_php_tool_command_with_dirs("./tools/bin/pest", &dirs),
             "pest"
+        );
+    }
+
+    /// `jj` is covered only by a TOML filter, never by the native RULES table,
+    /// so the bare case pins the TOML branch of the rewrite path and keeps the
+    /// wrapper assertions below from passing vacuously when TOML is disabled.
+    #[test]
+    fn test_toml_filter_rewrites_bare_command_but_not_wrapped_invocations() {
+        assert_eq!(
+            rewrite_command_no_prefixes("jj log", &[]),
+            Some("rtk jj log".into()),
+        );
+        assert_eq!(
+            rewrite_command_no_prefixes("timeout 5 /usr/bin/jj log", &[]),
+            None,
+        );
+        assert_eq!(
+            rewrite_command_no_prefixes("nohup /opt/tools/jj log", &[]),
+            None,
+        );
+    }
+
+    #[test]
+    fn test_path_qualified_liquibase_is_not_rewritten() {
+        // #3757 originally requested path-qualified rewriting, but registry
+        // normalization currently classifies the basename without rewriting
+        // the original argv[0]. Pin that existing behavior explicitly.
+        assert_eq!(
+            rewrite_command_no_prefixes("/usr/bin/liquibase update", &[]),
+            None,
         );
     }
 }

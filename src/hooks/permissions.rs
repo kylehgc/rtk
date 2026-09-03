@@ -41,14 +41,24 @@ pub enum Host {
 }
 
 pub fn check_command_for(cmd: &str, host: Host) -> PermissionVerdict {
-    let (deny_rules, ask_rules, allow_rules) = match host {
+    let (deny_rules, ask_rules, allow_rules) = load_rules_for(host);
+    check_command_with_rules(cmd, &deny_rules, &ask_rules, &allow_rules)
+}
+
+/// Load `host`'s deny/ask/allow Bash rules from disk, doing the settings-file I/O
+/// exactly once. Exposed so a caller that checks many commands against the same
+/// host in a loop (e.g. `rtk discover` scanning thousands of transcript commands)
+/// can load once up front and reuse `check_command_with_rules` per command instead
+/// of going through `check_command_for` and re-reading every settings file from
+/// disk on every single call.
+pub(crate) fn load_rules_for(host: Host) -> (Vec<String>, Vec<String>, Vec<String>) {
+    match host {
         Host::Claude => load_permission_rules(),
         Host::Cursor => load_cursor_rules(),
         Host::Gemini => load_gemini_rules(),
         Host::Droid => load_droid_rules(),
         Host::Vibe => (Vec::new(), Vec::new(), Vec::new()),
-    };
-    check_command_with_rules(cmd, &deny_rules, &ask_rules, &allow_rules)
+    }
 }
 
 /// Internal implementation allowing tests to inject rules without file I/O.

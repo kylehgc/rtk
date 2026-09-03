@@ -1,22 +1,6 @@
 //! Never-worse output guard: RTK never emits more tokens than the raw command.
-//!
-//! One caller is allowed past it. `rtk diff` renders a short message for a
-//! difference `str::lines()` cannot show, where the raw fallback is two blobs
-//! that look identical and answers the question worse at any size.
-//! `INVISIBLE_DIFF_TOKEN_ALLOWANCE` bounds what the message itself may cost.
-//! The `file1 -> file2` header it opens with is charged to the caller's own
-//! arguments rather than to the allowance, so the printed overage above raw is
-//! the allowance plus the length of the two paths.
 
 use crate::core::tracking::estimate_tokens;
-
-/// Tokens `rtk diff` may spend above raw to name a difference that a line-based
-/// diff cannot render. Past it the raw text is short enough to read directly.
-///
-/// Measured on what the message states, not on the `file1 -> file2` header the
-/// caller's own arguments determine: an absolute path pair would otherwise eat
-/// the whole allowance and drop the diagnostic for reasons unrelated to it.
-pub const INVISIBLE_DIFF_TOKEN_ALLOWANCE: usize = 16;
 
 /// Returns `filtered`, or `raw` when `filtered` would emit more tokens.
 pub fn never_worse<'a>(raw: &'a str, filtered: &'a str) -> &'a str {
