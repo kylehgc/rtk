@@ -65,10 +65,13 @@ exit 3"#,
     assert_eq!(out.status.code(), Some(3), "exit code must propagate");
 }
 
-/// The command said nothing on stdout, so neither does rtk. A filter's "I got nothing"
-/// placeholder is not a diagnostic — the real one is on stderr.
+/// The command said nothing on stdout, so rtk must not claim a clean run there. A
+/// filter's "I got nothing" placeholder is not a diagnostic — the real one is on
+/// stderr. This fork's prettier filter reads that stderr report itself (fork PR
+/// #117, upstream #2878) and summarises it on stdout, so the pin here is that the
+/// report reaches the user and no success is invented, not which stream carries it.
 #[test]
-fn no_invented_stdout_diagnostic_when_the_tool_used_stderr() {
+fn no_invented_success_when_the_tool_reported_on_stderr() {
     let dir = tempfile::tempdir().expect("tempdir");
     fake_tool(
         dir.path(),
@@ -83,14 +86,16 @@ exit 1"#,
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
 
+    let combined = format!("{stdout}{stderr}");
     assert!(
-        stdout.trim().is_empty(),
-        "prettier ran fine and reported on stderr; stdout must not claim otherwise, got: {stdout}"
+        combined.contains("src/a.js"),
+        "prettier's report must reach the user; got stdout: {stdout} stderr: {stderr}"
     );
     assert!(
-        stderr.contains("[warn] src/a.js"),
-        "prettier's report must reach the user; got stderr: {stderr}"
+        !stdout.contains("No errors") && !stdout.contains("formatted"),
+        "a failing check must not be reported as success; got stdout: {stdout}"
     );
+    assert_eq!(out.status.code(), Some(1), "exit code must propagate");
 }
 
 /// stderr goes out on its own stream, so it must not also be replayed on stdout.
