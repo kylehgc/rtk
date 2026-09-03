@@ -1,8 +1,9 @@
 #![cfg(unix)]
-//! A failing tool's stderr must reach the user (#3026). Filters that compress
-//! stdout run with `RunOptions::stdout_only`, which keeps stderr out of the filter
-//! input — so unless the runner emits it, the diagnostics are dropped and the exit
-//! code becomes the only surviving signal.
+//! A tool's stderr must reach the user whatever the exit code. Filters that
+//! compress stdout run with `RunOptions::stdout_only`, which keeps stderr out of
+//! the filter input — so unless the runner emits it, the diagnostics are dropped
+//! and the exit code becomes the only surviving signal (upstream #3029), or, on
+//! a success exit with empty stdout, nothing at all survives (upstream #3772).
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -55,15 +56,22 @@ fn failing_tool_stderr_reaches_the_user() {
 }
 
 #[test]
-fn successful_tool_stderr_stays_suppressed() {
-    // On success stderr is the incidental noise RTK exists to compress away, and
-    // the filtered stdout already carries the result.
+fn successful_tool_stderr_reaches_the_user() {
+    // A success exit carries diagnostics too — a deprecation notice, a missing
+    // config, prettier's whole report — and with stdout empty the never-worse
+    // guard used to collapse the run to silence on both streams.
     let db = tempfile::tempdir().expect("create db tempdir");
     let out = rtk_ruff(&shim(0), &db);
 
     assert_eq!(out.status.code(), Some(0));
     assert!(
-        !String::from_utf8_lossy(&out.stderr).contains(DIAGNOSTIC),
-        "successful run must not leak tool stderr"
+        String::from_utf8_lossy(&out.stderr).contains(DIAGNOSTIC),
+        "diagnostic swallowed on a success exit — stderr was {:?}, stdout was {:?}",
+        String::from_utf8_lossy(&out.stderr),
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).trim().is_empty(),
+        "the tool said nothing on stdout, so neither may rtk"
     );
 }
