@@ -48,7 +48,7 @@ output *larger* and more correct. This fork does not claim to save more tokens t
 upstream — that is upstream's pitch. It claims to not lose your errors.
 
 <!-- FORK_DELTA_START -->
-**59 fixes in this fork that upstream does not have.** Each links to the commit,
+**61 fixes in this fork that upstream does not have.** Each links to the commit,
 where the original author is recorded. Adopted fixes come from community PRs that upstream
 has not merged — see the [adoption issues](https://github.com/kylehgc/rtk/issues?q=is%3Aissue+Adopt+upstream)
 for provenance.
@@ -60,6 +60,8 @@ upstream in another form.
 
 | Fix | Commit |
 |---|---|
+| fix(runner): drop the failure-only stderr forward superseded by #3772 | [`9ed2e49`](https://github.com/kylehgc/rtk/commit/9ed2e49) |
+| fix(core): forward stderr from stdout-only filters and count it | [`12db983`](https://github.com/kylehgc/rtk/commit/12db983) |
 | fix(benchmark): count find names only, not the disclosure note and tee pointer | [`e2e11b7`](https://github.com/kylehgc/rtk/commit/e2e11b7) |
 | fix(git): fall back to raw text when compact_diff gets non-unified input | [`c8e7a8b`](https://github.com/kylehgc/rtk/commit/c8e7a8b) |
 | fix(diff): stop reporting differing files as identical, and align by LCS | [`acbe88c`](https://github.com/kylehgc/rtk/commit/acbe88c) |
