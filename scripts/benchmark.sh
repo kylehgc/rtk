@@ -208,11 +208,16 @@ bench "find --max 100" "find . -not -path './target/*' -not -path './.git/*' -ty
 # limiting. Assert the cap directly instead: `rtk find --max N` displays exactly
 # min(N, total) names, so a --max that is ignored (falling back to the default
 # cap) fails whether N sits below or above that default.
+# Only names count: find also appends a "... (N filtered)" note for hidden or
+# gitignored matches and a "[see remaining: ...]" tee pointer to them, and a
+# word count over those lines read as nine extra names.
 count_find_names() {
   awk '
     /^[0-9]+F [0-9]+D:$/ { next }   # "356F 63D:" summary header
     /^\+[0-9]+ more$/    { next }   # "+256 more" truncation marker
     /^ext: /             { next }   # extension histogram footer
+    /^\.\.\. \([0-9]+\+? filtered\)$/ { next }   # hidden/ignored disclosure note
+    /^\[see remaining: tail -n \+[0-9]+ .*\]$/ { next }   # tee pointer to them
     NF == 0              { next }
     { n += NF - ($1 ~ /\/$/ ? 1 : 0) }   # grouped lines lead with "dir/"
     END { print n + 0 }
@@ -226,6 +231,8 @@ count_find_total() {
     /^[0-9]+F [0-9]+D:$/ { total = $1 + 0; next }
     /^\+[0-9]+ more$/    { more = substr($1, 2) + 0; next }
     /^ext: /             { next }
+    /^\.\.\. \([0-9]+\+? filtered\)$/ { next }
+    /^\[see remaining: tail -n \+[0-9]+ .*\]$/ { next }
     NF == 0              { next }
     { shown += NF - ($1 ~ /\/$/ ? 1 : 0) }
     END { print (total ? total : shown + more) + 0 }
