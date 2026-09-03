@@ -26,6 +26,8 @@ fn rtk_with(dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_rtk"))
         .args(args)
         .env("PATH", path)
+        // Keep tracking off the developer's real database.
+        .env("RTK_DB_PATH", dir.join("rtk-test.db"))
         .output()
         .expect("run rtk")
 }
@@ -68,7 +70,7 @@ exit 3"#,
 /// The command said nothing on stdout, so rtk must not claim a clean run there. A
 /// filter's "I got nothing" placeholder is not a diagnostic — the real one is on
 /// stderr. This fork's prettier filter reads that stderr report itself (fork PR
-/// #117, upstream #2878) and summarises it on stdout, so the pin here is that the
+/// #117, upstream issue #2878) and summarises it on stdout, so the pin here is that the
 /// report reaches the user and no success is invented, not which stream carries it.
 #[test]
 fn no_invented_success_when_the_tool_reported_on_stderr() {
