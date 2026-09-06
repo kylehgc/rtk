@@ -52,6 +52,7 @@ HEALED_SHAS=(
   ce07aff # 2026-09-01 early snapshot of upstream PR #3268, superseded by the refreshed adoption acbe88c (fork PR #153); count it once
   54cb3a1 # 2026-09-01 early snapshot of upstream PR #3268, superseded by the refreshed adoption acbe88c (fork PR #153); count it once
   7753ec7 # 2026-09-01 test-only clippy amendment to acbe88c; nothing to advertise
+  e2e11b7 # 2026-09-05 superseded by upstream d952a6b (Adrien Eppling, PR #3863) find disclosure-line skips; benchmark.sh is upstream's again (claudedocs/sync-conflict-2026-09-05.md)
 )
 
 # ponytail: patch-id scan bounded to upstream commits since UPSTREAM_SINCE.
