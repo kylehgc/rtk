@@ -174,11 +174,22 @@ fn render_diff(file1: &Path, file2: &Path, comparison: &FileComparison) -> (Stri
     };
 
     match &diff.unaligned {
-        Some(Unaligned::DifferingLines(n)) => {
+        Some(Unaligned::DifferingLines { count, over }) => {
+            // The refusal states the cap it hit. A byte refusal can name one
+            // line, and "1 lines differ, too many to list" is self-contradictory.
+            let verb = if *count == 1 { "differs" } else { "differ" };
+            let reason = match over {
+                ListingCap::Count => "too many to list".to_string(),
+                ListingCap::Bytes(bytes) => {
+                    format!("{} of text, too large to list", format_megabytes(*bytes))
+                }
+            };
             return (
                 format!(
-                    "{} lines differ, too many to list; use `rtk proxy diff` for the full text\n",
-                    n
+                    "{} {}, {}; use `rtk proxy diff` for the full text\n",
+                    count_lines(*count),
+                    verb,
+                    reason
                 ),
                 1,
             );
@@ -209,16 +220,27 @@ fn render_diff(file1: &Path, file2: &Path, comparison: &FileComparison) -> (Stri
                 1,
             );
         }
-        Some(Unaligned::EditScript { removed, added }) => {
+        Some(Unaligned::EditScript {
+            removed,
+            added,
+            over,
+        }) => {
             // Neither count opens the line: a leading `-` or `+` would read as
             // a listed line to anything anchoring on the markers.
+            let reason = match over {
+                ListingCap::Count => "too many to list".to_string(),
+                ListingCap::Bytes(bytes) => {
+                    format!("{} of text, too large to list", format_megabytes(*bytes))
+                }
+            };
             return (
                 format!(
-                    "only in {}: {} lines, only in {}: {} lines; too many to list, use `rtk proxy diff` for the full text\n",
+                    "only in {}: {}, only in {}: {}; {}, use `rtk proxy diff` for the full text\n",
                     file1.display(),
-                    removed,
+                    count_lines(*removed),
                     file2.display(),
-                    added
+                    count_lines(*added),
+                    reason
                 ),
                 1,
             );
@@ -259,6 +281,20 @@ fn render_diff(file1: &Path, file2: &Path, comparison: &FileComparison) -> (Stri
 /// stops counting markers and a summary starts saving a scan, and there the
 /// line is a small fraction of the listing.
 const COUNTS_MIN_LISTED_LINES: usize = 20;
+
+fn count_lines(n: usize) -> String {
+    if n == 1 {
+        "1 line".to_string()
+    } else {
+        format!("{n} lines")
+    }
+}
+
+/// Only reached past `POSITIONAL_BYTE_CAP`, so one decimal of megabytes is
+/// never rounding a small figure to zero.
+fn format_megabytes(bytes: usize) -> String {
+    format!("{:.1}MB", bytes as f64 / 1_000_000.0)
+}
 
 /// The note explaining which file each marker is numbered in, or `None` when
 /// the output has only one frame and needs no note.
@@ -468,6 +504,10 @@ struct Hunk {
     /// `(old index, new index)` for the lines that read as one rewritten line:
     /// similar enough to show as a single `~`. Sorted by old index. Every
     /// unpaired line lists as a `-` or a `+`.
+    ///
+    /// Not necessarily monotonic in the new index: the pairing is by
+    /// similarity, so two similar lines swapped and both edited pair crosswise.
+    /// See `pairs_cross`.
     pairs: Vec<(usize, usize)>,
 }
 
@@ -480,6 +520,20 @@ impl Hunk {
             new: Vec::new(),
             pairs: Vec::new(),
         }
+    }
+
+    /// Whether some pair's new line sits above another pair's while its old
+    /// line sits below.
+    ///
+    /// The condensed render lists `~` lines in file1 order. When the pairs are
+    /// monotonic, that is also file2 order, and a reader rebuilding file2 puts
+    /// each new text where the old one was. When they cross, that rebuild puts
+    /// the new texts in the wrong file2 order: swapping `timeout` and `retries`
+    /// while editing both rendered as two in-place edits, and the file they
+    /// described did not exist. Such a hunk renders each `~` with its file2
+    /// line too, which is the only case where order does not already say it.
+    fn pairs_cross(&self) -> bool {
+        self.pairs.windows(2).any(|w| w[1].1 < w[0].1)
     }
 
     /// The condensed listing of this hunk: `~` and `-` lines in file1 order,
@@ -498,6 +552,7 @@ impl Hunk {
                     pairs.next();
                     out.push(DiffChange::Modified {
                         line1: self.start1 + i,
+                        line2: self.start2 + j,
                         old,
                         new: &self.new[j],
                     });
@@ -531,9 +586,13 @@ enum DiffChange<'a> {
     Added { line2: usize, text: &'a str },
     /// A line only in file1.
     Removed { line1: usize, text: &'a str },
-    /// A line rewritten in place, similar enough to show as a single `~` line.
+    /// A line rewritten, similar enough to show as a single `~` line. `line1`
+    /// is where `old` sits in file1 and `line2` where `new` sits in file2; the
+    /// render prints `line2` only when the hunk's pairing crosses, since a
+    /// shift alone is inferable from order and a crossing is not.
     Modified {
         line1: usize,
+        line2: usize,
         old: &'a str,
         new: &'a str,
     },
@@ -555,7 +614,9 @@ struct DiffResult {
 }
 
 impl DiffResult {
-    /// The condensed listing across every hunk, in file order.
+    /// The condensed listing across every hunk, in file order. The render
+    /// walks the hunks itself, since a crossed pairing is a hunk property.
+    #[cfg(test)]
     fn changes(&self) -> Vec<DiffChange<'_>> {
         self.hunks.iter().flat_map(Hunk::changes).collect()
     }
@@ -582,14 +643,27 @@ impl DiffResult {
 
 fn format_diff_changes(diff: &DiffResult) -> String {
     let mut out = String::new();
-    for change in diff.changes() {
-        match change {
-            DiffChange::Added { line2, text } => out.push_str(&format!("+{:4} {}\n", line2, text)),
-            DiffChange::Removed { line1, text } => {
-                out.push_str(&format!("-{:4} {}\n", line1, text))
-            }
-            DiffChange::Modified { line1, old, new } => {
-                out.push_str(&format!("~{:4} {} → {}\n", line1, old, new))
+    for hunk in &diff.hunks {
+        let crossed = hunk.pairs_cross();
+        for change in hunk.changes() {
+            match change {
+                DiffChange::Added { line2, text } => {
+                    out.push_str(&format!("+{:4} {}\n", line2, text))
+                }
+                DiffChange::Removed { line1, text } => {
+                    out.push_str(&format!("-{:4} {}\n", line1, text))
+                }
+                DiffChange::Modified {
+                    line1,
+                    line2,
+                    old,
+                    new,
+                } if crossed => {
+                    out.push_str(&format!("~{:4}→{} {} → {}\n", line1, line2, old, new))
+                }
+                DiffChange::Modified { line1, old, new, .. } => {
+                    out.push_str(&format!("~{:4} {} → {}\n", line1, old, new))
+                }
             }
         }
     }
@@ -646,8 +720,9 @@ fn format_line_range(start: usize, end: usize) -> String {
 #[derive(Debug, PartialEq, Eq)]
 enum Unaligned {
     /// The differing lines could be counted exactly — one side is empty, or the
-    /// lengths are equal — and there are too many of them to be worth listing.
-    DifferingLines(usize),
+    /// lengths are equal — and there are too many of them, or they hold too
+    /// much text, to be worth listing.
+    DifferingLines { count: usize, over: ListingCap },
     /// Unequal lengths past the trace budget. Nothing was counted, so the only
     /// figures stated are a floor and where the differences are.
     ///
@@ -673,7 +748,26 @@ enum Unaligned {
     /// Not the number of listed lines: the runs have not been paired yet, and a
     /// pairing turns two script steps into one `~`. `removed + added` bounds
     /// that count from above, which is what the budget needs.
-    EditScript { removed: usize, added: usize },
+    EditScript {
+        removed: usize,
+        added: usize,
+        over: ListingCap,
+    },
+}
+
+/// Which half of the listing budget a refusal hit.
+///
+/// The render has to name it: a refusal on bytes reaches the same message as a
+/// refusal on count, and "1 lines ... too many to list" for two 3MB single-line
+/// files reads as a bug rather than a budget. The count cap wins when both are
+/// exceeded, since the count is what the reader would have to scan.
+#[derive(Debug, PartialEq, Eq)]
+enum ListingCap {
+    /// More differing positions than `POSITIONAL_CHANGE_CAP`.
+    Count,
+    /// Within the count cap, but the listed text would hold this many bytes,
+    /// over `POSITIONAL_BYTE_CAP`.
+    Bytes(usize),
 }
 
 /// One edit-script step, in the trimmed middle's coordinates. Line numbers are
@@ -793,7 +887,11 @@ fn compute_diff(lines1: &[&str], lines2: &[&str]) -> DiffResult {
             return ops_to_hunks(ops, lo);
         }
         Ok(Aligned::TooManySteps { removed, added }) => {
-            return unaligned(Unaligned::EditScript { removed, added });
+            return unaligned(Unaligned::EditScript {
+                removed,
+                added,
+                over: ListingCap::Count,
+            });
         }
         Err(d) => d,
     };
@@ -853,16 +951,20 @@ fn too_much_to_list(sizes: impl Iterator<Item = usize>) -> Option<DiffResult> {
         count += 1;
         bytes += size;
     }
-    if !over_listing_budget(count, bytes) {
-        return None;
-    }
-    Some(unaligned(Unaligned::DifferingLines(count)))
+    let over = over_listing_budget(count, bytes)?;
+    Some(unaligned(Unaligned::DifferingLines { count, over }))
 }
 
-/// Whether a change list naming `count` differing positions and holding `bytes`
-/// bytes of text is too large to be worth building.
-fn over_listing_budget(count: usize, bytes: usize) -> bool {
-    count > POSITIONAL_CHANGE_CAP || bytes > POSITIONAL_BYTE_CAP
+/// Which cap a change list naming `count` differing positions and holding
+/// `bytes` bytes of text exceeds, or `None` when it is worth building.
+fn over_listing_budget(count: usize, bytes: usize) -> Option<ListingCap> {
+    if count > POSITIONAL_CHANGE_CAP {
+        Some(ListingCap::Count)
+    } else if bytes > POSITIONAL_BYTE_CAP {
+        Some(ListingCap::Bytes(bytes))
+    } else {
+        None
+    }
 }
 
 /// Refuse an aligned edit script whose change list would hold too many bytes,
@@ -896,10 +998,12 @@ fn script_too_large(ops: &[Op]) -> Option<DiffResult> {
             Op::Keep(_) => {}
         }
     }
-    if !over_listing_budget(removed + added, bytes) {
-        return None;
-    }
-    Some(unaligned(Unaligned::EditScript { removed, added }))
+    let over = over_listing_budget(removed + added, bytes)?;
+    Some(unaligned(Unaligned::EditScript {
+        removed,
+        added,
+        over,
+    }))
 }
 
 /// The single hunk for a pair where one side is empty: every line of the other
@@ -1219,6 +1323,12 @@ const PAIRING_CELL_CAP: usize = 256;
 /// diagonal breaks ties — a character-set score cannot separate `value = 9`
 /// from `value = 2` as rewrites of `value = 1` — then old-then-new index so the
 /// result is deterministic.
+///
+/// The pairs may cross: two similar lines swapped and both edited pair each
+/// old line with the new line it resembles, not the one at its position.
+/// Refusing crossed candidates would keep the render's line numbers implicit
+/// at the cost of 6.8% of rewrite pairings on crossing-prone content, so the
+/// render carries the second line number for a crossed hunk instead.
 fn pair_rewrites(old: &[String], new: &[String]) -> Vec<(usize, usize)> {
     if old.is_empty() || new.is_empty() {
         return Vec::new();
@@ -2860,7 +2970,7 @@ mod tests {
         assert!(result
             .changes()
             .iter()
-            .any(|c| matches!(c, DiffChange::Modified { line1: 3, old, new }
+            .any(|c| matches!(c, DiffChange::Modified { line1: 3, line2: 4, old, new }
                 if *old == "let x = 1;" && *new == "let x = 2;")));
     }
 
@@ -2997,7 +3107,13 @@ mod tests {
         let b: Vec<&str> = b_lines.iter().map(|s| s.as_str()).collect();
 
         let result = compute_diff(&a, &b);
-        assert_eq!(result.unaligned, Some(Unaligned::DifferingLines(20_000)));
+        assert_eq!(
+            result.unaligned,
+            Some(Unaligned::DifferingLines {
+                count: 20_000,
+                over: ListingCap::Count
+            })
+        );
         assert!(result.changes().is_empty());
         assert!(!result.positional);
 
@@ -3434,7 +3550,13 @@ mod tests {
         let b: Vec<&str> = b_lines.iter().map(|s| s.as_str()).collect();
 
         let result = compute_diff(&a, &b);
-        assert_eq!(result.unaligned, Some(Unaligned::DifferingLines(3_000)));
+        assert_eq!(
+            result.unaligned,
+            Some(Unaligned::DifferingLines {
+                count: 3_000,
+                over: ListingCap::Bytes(6_000_000)
+            })
+        );
         assert!(result.changes().is_empty());
 
         // Short lines at the same count still list.
@@ -3458,7 +3580,10 @@ mod tests {
         let result = compute_diff(&[], &b);
         assert_eq!(
             result.unaligned,
-            Some(Unaligned::DifferingLines(POSITIONAL_CHANGE_CAP + 1))
+            Some(Unaligned::DifferingLines {
+                count: POSITIONAL_CHANGE_CAP + 1,
+                over: ListingCap::Count
+            })
         );
         assert!(result.changes().is_empty());
     }
@@ -3596,7 +3721,8 @@ mod tests {
             result.unaligned,
             Some(Unaligned::EditScript {
                 removed: 0,
-                added: 59999
+                added: 59999,
+                over: ListingCap::Count
             })
         );
         assert!(result.changes().is_empty());
@@ -3679,7 +3805,8 @@ mod tests {
             result.unaligned,
             Some(Unaligned::EditScript {
                 removed: 1,
-                added: 1
+                added: 1,
+                over: ListingCap::Bytes(2_200_000)
             })
         );
         assert!(result.changes().is_empty());
@@ -6798,5 +6925,146 @@ diff --git a/b.rs b/b.rs
                 assert_eq!(old.len(), 500, "Line was truncated!");
             }
         }
+    }
+
+    #[test]
+    fn test_render_crossed_pairing_carries_file2_line_numbers() {
+        // Two similar lines swapped and both edited pair crosswise. Listed in
+        // file1 order with one number each, they read as two in-place edits
+        // and put `timeout = 60` on line 2 of file2, where `retries = 5` is.
+        let content1 = "server:\ntimeout = 30\nretries = 3\nhost = \"x\"\n";
+        let content2 = "server:\nretries = 5\ntimeout = 60\nhost = \"x\"\n";
+        let diff = changes_of(content1, content2);
+        assert_eq!(diff.modified, 2, "both lines pair as rewrites");
+        assert_eq!(
+            format_diff_changes(&diff),
+            "~   2→3 timeout = 30 → timeout = 60\n~   3→2 retries = 3 → retries = 5\n"
+        );
+
+        // A shift alone is inferable from order, so a rewrite after an
+        // insertion keeps the single file1 number.
+        let shifted = changes_of("a\nb\nlet x = 1;\n", "NEW\na\nb\nlet x = 2;\n");
+        assert_eq!(
+            format_diff_changes(&shifted),
+            "+   1 NEW\n~   3 let x = 1; → let x = 2;\n"
+        );
+    }
+
+    /// Rebuild file2 from a condensed listing the way a reader would: `+` and
+    /// `~ N→M` lines sit at their stated file2 line, and everything else —
+    /// kept file1 lines and single-numbered `~` rewrites — fills the remaining
+    /// slots in file1 order. Also checks every stated line number against the
+    /// text it claims.
+    fn replay_condensed(listing: &str, a: &[&str], b: &[&str]) -> Vec<String> {
+        let mut removed = vec![false; a.len()];
+        let mut rewritten: Vec<Option<String>> = vec![None; a.len()];
+        let mut fixed: Vec<Option<String>> = vec![None; b.len()];
+
+        for line in listing.lines() {
+            let (marker, rest) = line.split_at(1);
+            let rest = rest.trim_start();
+            let (numbers, text) = rest.split_once(' ').unwrap_or((rest, ""));
+            match marker {
+                "+" => {
+                    let l2: usize = numbers.parse().unwrap();
+                    assert_eq!(b[l2 - 1], text, "+ names file2 at {l2}");
+                    assert!(fixed[l2 - 1].replace(text.to_string()).is_none());
+                }
+                "-" => {
+                    let l1: usize = numbers.parse().unwrap();
+                    assert_eq!(a[l1 - 1], text, "- names file1 at {l1}");
+                    removed[l1 - 1] = true;
+                }
+                "~" => {
+                    let (old, new) = text.split_once(" → ").unwrap();
+                    match numbers.split_once('→') {
+                        Some((l1, l2)) => {
+                            let (l1, l2): (usize, usize) =
+                                (l1.parse().unwrap(), l2.parse().unwrap());
+                            assert_eq!(a[l1 - 1], old, "~ names file1 at {l1}");
+                            assert_eq!(b[l2 - 1], new, "~ names file2 at {l2}");
+                            removed[l1 - 1] = true;
+                            assert!(fixed[l2 - 1].replace(new.to_string()).is_none());
+                        }
+                        None => {
+                            let l1: usize = numbers.parse().unwrap();
+                            assert_eq!(a[l1 - 1], old, "~ names file1 at {l1}");
+                            rewritten[l1 - 1] = Some(new.to_string());
+                        }
+                    }
+                }
+                other => panic!("unexpected marker {other:?} in {line:?}"),
+            }
+        }
+
+        let mut stream = a.iter().enumerate().filter(|(i, _)| !removed[*i]).map(|(i, l)| {
+            rewritten[i].clone().unwrap_or_else(|| (*l).to_string())
+        });
+        let out: Vec<String> = fixed
+            .into_iter()
+            .map(|slot| slot.or_else(|| stream.next()).expect("listing shorter than file2"))
+            .collect();
+        assert!(stream.next().is_none(), "listing longer than file2");
+        out
+    }
+
+    #[test]
+    fn test_condensed_listing_reconstructs_the_second_file() {
+        // The pairing is by similarity and may cross; the render has to carry
+        // enough numbers that a reader rebuilding file2 gets file2. A
+        // small alphabet of similar lines makes crossings frequent, which a
+        // realistic corpus does not.
+        let mut seed = 0xc0ff_ee00_u64;
+        let mut crossed = 0usize;
+        for _ in 0..3_000 {
+            let n = (lcg(&mut seed) % 12) as usize;
+            let m = (lcg(&mut seed) % 12) as usize;
+            let mut gen = |k: usize| -> Vec<String> {
+                (0..k)
+                    .map(|_| format!("key{} = {}", lcg(&mut seed) % 3, lcg(&mut seed) % 5))
+                    .collect()
+            };
+            let a_lines = gen(n);
+            let b_lines = gen(m);
+            let a: Vec<&str> = a_lines.iter().map(|s| s.as_str()).collect();
+            let b: Vec<&str> = b_lines.iter().map(|s| s.as_str()).collect();
+
+            let diff = compute_diff(&a, &b);
+            assert!(diff.unaligned.is_none());
+            crossed += diff.hunks.iter().filter(|h| h.pairs_cross()).count();
+            let listing = format_diff_changes(&diff);
+            assert_eq!(
+                replay_condensed(&listing, &a, &b),
+                b_lines,
+                "listing misstates file2:\n{listing}\nfile1: {a:?}\nfile2: {b:?}"
+            );
+        }
+        assert!(crossed > 100, "the generator must exercise crossings, saw {crossed}");
+    }
+
+    #[test]
+    fn test_render_byte_refusal_names_the_size_not_a_count() {
+        // Within the count cap, over the byte cap. "1 lines ... too many to
+        // list" reads as a bug; the refusal has to state the cap it hit.
+        let big1 = "x".repeat(1_100_000);
+        let big2 = "y".repeat(1_100_000);
+        let content1 = format!("head\n{big1}\ntail\n");
+        let content2 = format!("head\n{big2}\ntail\n");
+        let (out, code) =
+            render_file_diff(Path::new("a.txt"), Path::new("b.txt"), &content1, &content2);
+        assert_eq!(code, 1);
+        assert_eq!(
+            out,
+            "only in a.txt: 1 line, only in b.txt: 1 line; 2.2MB of text, too large to list, use `rtk proxy diff` for the full text\n"
+        );
+
+        // The one-sided path reaches the same budget through `DifferingLines`.
+        let appended = format!("{}\n", "z".repeat(3_000_000));
+        let (out, code) = render_file_diff(Path::new("a.txt"), Path::new("b.txt"), "", &appended);
+        assert_eq!(code, 1);
+        assert_eq!(
+            out,
+            "1 line differs, 3.0MB of text, too large to list; use `rtk proxy diff` for the full text\n"
+        );
     }
 }
