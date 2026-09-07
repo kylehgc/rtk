@@ -1475,11 +1475,13 @@ fn filter_status_with_args(output: &str) -> String {
 /// terminal newline, while `never_worse` may hand back git's raw stdout, which
 /// does. Printing either verbatim is wrong in one of the two cases: the joined
 /// form glues its last entry to whatever prints next, so
-/// `rtk git status --porcelain | wc -l` undercounts by one — reporting `0`, i.e.
-/// "clean", on a tree with a single change.
+/// `rtk git status -s | wc -l` undercounts by one — reporting `0`, i.e.
+/// "clean", on a tree with a single change. (`--porcelain` and `-z` never
+/// reach this path: `status_args_request_machine_output` passes them
+/// through raw above.)
 ///
-/// Empty output is left empty: `--porcelain` on a clean tree prints nothing at
-/// all, and a lone newline there would be a different fidelity bug.
+/// Empty output is left empty: `-s` on a clean tree prints nothing at all,
+/// and a lone newline there would be a different fidelity bug.
 fn with_trailing_newline(output: &str) -> String {
     if output.is_empty() || output.ends_with('\n') {
         output.to_string()
@@ -2985,18 +2987,28 @@ mod tests {
 
     #[test]
     fn with_trailing_newline_keeps_empty_output_empty() {
-        // `--porcelain` on a clean tree prints nothing; a lone newline would be
-        // its own fidelity bug.
+        // `-s` on a clean tree prints nothing; a lone newline would be its
+        // own fidelity bug.
         assert_eq!(with_trailing_newline(""), "");
+        // Composed with the real pipeline: `filter_status_with_args("")` is
+        // `"ok"`, and only `never_worse`'s tie-break returns git's empty
+        // stdout instead — pin the composition so a clean `git status -s`
+        // never becomes `ok\n`.
+        assert_eq!(
+            with_trailing_newline(never_worse("", &filter_status_with_args(""))),
+            ""
+        );
     }
 
     #[test]
     fn filtered_status_line_count_matches_git() {
-        // The regression this guards: `rtk git status --porcelain | wc -l`
-        // reported 0 on a one-file dirty tree, i.e. a false "clean".
+        // The regression this guards: `rtk git status -s | wc -l` reported 0
+        // on a one-file dirty tree, i.e. a false "clean". (`--porcelain` is
+        // machine-output passthrough and never reached this path.)
         let raw = "?? handoff/\n";
         let filtered = with_trailing_newline(&filter_status_with_args(raw));
-        assert_eq!(filtered.lines().count(), raw.lines().count());
+        // `wc -l` counts newlines, not `str::lines()` items.
+        assert_eq!(filtered.matches('\n').count(), raw.matches('\n').count());
         assert_eq!(filtered, raw);
     }
 
