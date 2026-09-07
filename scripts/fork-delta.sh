@@ -53,6 +53,13 @@ HEALED_SHAS=(
   54cb3a1 # 2026-09-01 early snapshot of upstream PR #3268, superseded by the refreshed adoption acbe88c (fork PR #153); count it once
   7753ec7 # 2026-09-01 test-only clippy amendment to acbe88c; nothing to advertise
   e2e11b7 # 2026-09-05 superseded by upstream d952a6b (Adrien Eppling, PR #3863) find disclosure-line skips; benchmark.sh is upstream's again (claudedocs/sync-conflict-2026-09-05.md)
+  5a61595 # 2026-09-07 merged upstream as ee614e4 under PR #3788 (rebased, patch-id differs); rounds after it healed by patch-id (claudedocs/sync-conflict-2026-09-07.md)
+  1f64783 # 2026-09-07 pre-region-parser hunk fix, subsumed by the region parser upstream merged as ee614e4 (PR #3788)
+  8e65037 # 2026-09-07 pre-region-parser hunk fix, subsumed by the region parser upstream merged as ee614e4 (PR #3788)
+  89cfe86 # 2026-09-07 pre-region-parser hunk fix, subsumed by the region parser upstream merged as ee614e4 (PR #3788)
+  5bcee1c # 2026-09-07 pre-region-parser hunk fix, subsumed by the region parser upstream merged as ee614e4 (PR #3788)
+  6375941 # 2026-09-07 pre-region-parser hunk fix, subsumed by the region parser upstream merged as ee614e4 (PR #3788)
+  acbe88c # 2026-09-07 snapshot ecef036 of upstream PR #3268, superseded by the re-adoption of its head (8ca2e0e, 091e4a5); count it once
 )
 
 # ponytail: patch-id scan bounded to upstream commits since UPSTREAM_SINCE.
