@@ -1469,6 +1469,27 @@ fn filter_status_with_args(output: &str) -> String {
     }
 }
 
+/// Ensure filtered output ends with exactly one trailing newline, matching git.
+///
+/// `filter_status_with_args` joins its kept lines with `\n` and therefore has no
+/// terminal newline, while `never_worse` may hand back git's raw stdout, which
+/// does. Printing either verbatim is wrong in one of the two cases: the joined
+/// form glues its last entry to whatever prints next, so
+/// `rtk git status -s | wc -l` undercounts by one — reporting `0`, i.e.
+/// "clean", on a tree with a single change. (`--porcelain` and `-z` never
+/// reach this path: `status_args_request_machine_output` passes them
+/// through raw above.)
+///
+/// Empty output is left empty: `-s` on a clean tree prints nothing at all,
+/// and a lone newline there would be a different fidelity bug.
+fn with_trailing_newline(output: &str) -> String {
+    if output.is_empty() || output.ends_with('\n') {
+        output.to_string()
+    } else {
+        format!("{}\n", output)
+    }
+}
+
 fn run_status(args: &[String], verbose: u8, global_args: &[String]) -> Result<i32> {
     let timer = tracking::TimedExecution::start();
 
@@ -1527,7 +1548,7 @@ fn run_status(args: &[String], verbose: u8, global_args: &[String]) -> Result<i3
 
         // Apply minimal filtering: strip ANSI, remove hints, empty lines
         let filtered = filter_status_with_args(&result.stdout);
-        let filtered = never_worse(&result.stdout, &filtered).to_string();
+        let filtered = with_trailing_newline(never_worse(&result.stdout, &filtered));
         print!("{}", filtered);
 
         timer.track(
@@ -2949,6 +2970,46 @@ mod tests {
         let cmd = build_status_command(&[], &[]);
         let args: Vec<_> = cmd.get_args().collect();
         assert_eq!(args, vec!["status", "--porcelain", "-b"]);
+    }
+
+    #[test]
+    fn with_trailing_newline_appends_when_missing() {
+        assert_eq!(
+            with_trailing_newline(" M tracked.txt\n?? zzz-last.txt"),
+            " M tracked.txt\n?? zzz-last.txt\n"
+        );
+    }
+
+    #[test]
+    fn with_trailing_newline_leaves_existing_newline_alone() {
+        assert_eq!(with_trailing_newline(" M tracked.txt\n"), " M tracked.txt\n");
+    }
+
+    #[test]
+    fn with_trailing_newline_keeps_empty_output_empty() {
+        // `-s` on a clean tree prints nothing; a lone newline would be its
+        // own fidelity bug.
+        assert_eq!(with_trailing_newline(""), "");
+        // Composed with the real pipeline: `filter_status_with_args("")` is
+        // `"ok"`, and only `never_worse`'s tie-break returns git's empty
+        // stdout instead — pin the composition so a clean `git status -s`
+        // never becomes `ok\n`.
+        assert_eq!(
+            with_trailing_newline(never_worse("", &filter_status_with_args(""))),
+            ""
+        );
+    }
+
+    #[test]
+    fn filtered_status_line_count_matches_git() {
+        // The regression this guards: `rtk git status -s | wc -l` reported 0
+        // on a one-file dirty tree, i.e. a false "clean". (`--porcelain` is
+        // machine-output passthrough and never reached this path.)
+        let raw = "?? handoff/\n";
+        let filtered = with_trailing_newline(&filter_status_with_args(raw));
+        // `wc -l` counts newlines, not `str::lines()` items.
+        assert_eq!(filtered.matches('\n').count(), raw.matches('\n').count());
+        assert_eq!(filtered, raw);
     }
 
     #[test]
