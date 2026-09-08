@@ -171,17 +171,25 @@ where
     Ok(exit_code)
 }
 
-/// `--help` before any `--` asks the tool for its usage. A filter models the
-/// tool's normal output, so it reads that usage as an empty run: `cargo build
-/// --help` summarised as "0 crates compiled", `cargo test --help` as nothing.
-/// Usage is not a filtering job; it goes through the passthrough verbatim.
-///
-/// `-h` is the tool's to define (`psql -h host`, `ls -h`) and stays with the
-/// filter that knows its tool.
+/// Tools that define `-h` as something other than help: `psql -h host`,
+/// `ls -h` (human sizes), `grep`/`rg -h` (no filename). Everywhere else a
+/// bare `-h` is the usage request it is for cargo, go, dotnet, git, …
+const DASH_H_IS_NOT_HELP: &[&str] = &["psql", "ls", "grep", "rg"];
+
+/// `--help` (or `-h`, unless the tool defines it) before any `--` asks the
+/// tool for its usage. A filter models the tool's normal output, so it reads
+/// that usage as an empty run: `cargo build --help` summarised as "0 crates
+/// compiled", `cargo test --help` as nothing. Usage is not a filtering job; it
+/// goes through the passthrough verbatim.
 pub fn requests_help(cmd: &Command) -> bool {
+    let stem = std::path::Path::new(cmd.get_program())
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    let dash_h_is_help = !DASH_H_IS_NOT_HELP.contains(&stem);
     cmd.get_args()
         .take_while(|arg| *arg != "--")
-        .any(|arg| arg == "--help")
+        .any(|arg| arg == "--help" || (dash_h_is_help && arg == "-h"))
 }
 
 pub fn run(
@@ -933,9 +941,31 @@ mod err_test_runner_tests {
         assert!(requests_help(&build(&["build", "--release", "--help"])));
         assert!(!requests_help(&build(&[])));
         assert!(!requests_help(&build(&["build", "--release"])));
-        // `-h` belongs to the tool; `--help` after `--` is an operand.
-        assert!(!requests_help(&build(&["-h"])));
+        // `--help` after `--` is an operand.
         assert!(!requests_help(&build(&["--", "--help"])));
+    }
+
+    #[test]
+    fn test_requests_help_dash_h_belongs_to_the_tools_that_define_it() {
+        let build = |program: &str, args: &[&str]| {
+            let mut c = Command::new(program);
+            c.args(args);
+            c
+        };
+        // cargo, go, dotnet, …: `-h` is help.
+        assert!(requests_help(&build("cargo", &["build", "-h"])));
+        assert!(requests_help(&build("/usr/bin/go", &["-h"])));
+        // psql host, ls human sizes, grep/rg no-filename: `-h` is theirs.
+        assert!(!requests_help(&build(
+            "psql",
+            &["-h", "localhost", "-c", "select 1"]
+        )));
+        assert!(!requests_help(&build("C:\\tools\\ls.exe", &["-lh"])));
+        assert!(!requests_help(&build("ls", &["-h"])));
+        assert!(!requests_help(&build("grep", &["-h", "pattern", "a", "b"])));
+        assert!(!requests_help(&build("rg.exe", &["-h", "x"])));
+        // …but `--help` is help for them too.
+        assert!(requests_help(&build("psql", &["--help"])));
     }
 
     #[test]

@@ -569,12 +569,19 @@ impl CaptureResult {
     }
 }
 
+/// Run `cmd` with stdin closed and capture what it wrote.
+///
+/// A `--help`/`-h` request (see [`crate::core::runner::requests_help`]) is
+/// not captured: the usage is shown as the tool prints it and the process
+/// exits with the tool's code, because no caller here can read usage as the
+/// output it filters. Internal probes must not pass those flags.
 pub fn exec_capture(cmd: &mut Command) -> Result<CaptureResult> {
     cmd.stdin(Stdio::null());
     capture(cmd)
 }
 
-/// Like [`exec_capture`] but inherits stdin so a wrapped engine can read a piped stdin.
+/// Like [`exec_capture`] but inherits stdin so a wrapped engine can read a
+/// piped stdin. Same `--help` contract.
 pub fn exec_capture_stdin(cmd: &mut Command) -> Result<CaptureResult> {
     cmd.stdin(Stdio::inherit());
     capture(cmd)

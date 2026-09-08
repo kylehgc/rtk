@@ -1843,27 +1843,39 @@ fn is_native_test_expression(command: &[String]) -> bool {
 /// kept, so `rtk tsc --help` printed rtk's one-line stub instead of running
 /// tsc, and through the hook that is what `tsc --help` came back as.
 ///
-/// The exact exemption is `RTK_META_COMMANDS`: rtk's own entry points, and
-/// everything beneath them (`rtk hook check <args>`), keep clap's help even
-/// when they take a trailing command (`proxy`, `run`, `rewrite`), because
-/// there is no tool to hand it to. Subcommands with nothing to forward
-/// (`gain`, `init`, …) are untouched by construction.
+/// The exact exemption is [`keeps_clap_help`]: rtk's own entry points
+/// (`RTK_META_COMMANDS`, plus the `sh -c` runners `err`, `test`, `summary`),
+/// and everything beneath them (`rtk hook check <args>`), keep clap's help
+/// even when they take a trailing command, because there is no tool to hand
+/// it to. Subcommands with nothing to forward (`gain`, `init`, …) are
+/// untouched by construction.
 ///
 /// Parents whose passthrough is an `external_subcommand` arm (`rtk git <any>`)
 /// cannot be told apart here: clap records that arm only while building, after
 /// this pass. Those parents carry `#[command(disable_help_flag = true)]` on
-/// the variant, and `test_every_wrapped_tool_subcommand_forwards_help` builds
-/// the command to hold both groups to the same contract.
+/// the variant. That setting is global in clap, so it also reaches their
+/// children that forward nothing (`rtk docker logs --help` runs docker) — the
+/// attribute is load-bearing for the whole subtree, not only the parent.
+/// `test_every_wrapped_tool_subcommand_forwards_help` builds the command to
+/// hold both groups to the same contract.
 fn forward_help_to_wrapped_tools(cmd: clap::Command) -> clap::Command {
     forward_help_below(cmd, 0, false)
 }
 
-/// `depth` 1 is a direct child of `rtk`: the meta-command names are only
-/// rtk's own there (`rtk run` is, `rtk bun run` is bun's). `under_meta`
-/// carries that verdict down to the meta command's own subcommands.
+/// rtk subcommands that take a trailing command but run it themselves
+/// (`sh -c`), so there is no tool to receive `--help`.
+const SHELL_RUNNERS: &[&str] = &["err", "test", "summary"];
+
+/// A top-level subcommand that is rtk's own: `--help` on it means rtk's help.
+fn keeps_clap_help(name: &str) -> bool {
+    core::constants::RTK_META_COMMANDS.contains(&name) || SHELL_RUNNERS.contains(&name)
+}
+
+/// `depth` 1 is a direct child of `rtk`: the rtk-owned names are only rtk's
+/// own there (`rtk run` is, `rtk bun run` is bun's). `under_meta` carries
+/// that verdict down to the meta command's own subcommands.
 fn forward_help_below(cmd: clap::Command, depth: usize, under_meta: bool) -> clap::Command {
-    let meta =
-        under_meta || (depth == 1 && core::constants::RTK_META_COMMANDS.contains(&cmd.get_name()));
+    let meta = under_meta || (depth == 1 && keeps_clap_help(cmd.get_name()));
     let forwards = cmd.get_positionals().any(|a| a.is_trailing_var_arg_set()) && !meta;
     let cmd = if forwards {
         cmd.disable_help_flag(true)
@@ -3256,6 +3268,10 @@ mod tests {
             vec!["rtk", "run", "--help"],
             vec!["rtk", "rewrite", "--help"],
             vec!["rtk", "hook", "check", "--help"],
+            // `sh -c` runners: a trailing command, no tool to forward to.
+            vec!["rtk", "err", "--help"],
+            vec!["rtk", "test", "--help"],
+            vec!["rtk", "summary", "--help"],
         ] {
             let err = match parse_cli(argv.clone()) {
                 Err(e) => e,
@@ -3273,8 +3289,7 @@ mod tests {
         fn walk(cmd: &clap::Command, path: &str, depth: usize, under_meta: bool, seen: &mut usize) {
             let forwards = cmd.get_positionals().any(|a| a.is_trailing_var_arg_set())
                 || cmd.is_allow_external_subcommands_set();
-            let meta = under_meta
-                || (depth == 1 && core::constants::RTK_META_COMMANDS.contains(&cmd.get_name()));
+            let meta = under_meta || (depth == 1 && keeps_clap_help(cmd.get_name()));
             if meta && cmd.get_name() == "help" {
                 // clap's own `help` subcommand (and its per-subcommand
                 // children) disable the flag on themselves.

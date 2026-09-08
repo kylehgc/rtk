@@ -59,6 +59,9 @@ impl GitCommand {
 /// here reads stdout as the subcommand's normal output: `git worktree -h`
 /// listed worktrees, `git show -h` printed nothing. Such a call is not a
 /// filtering job, so it runs through the passthrough unchanged.
+///
+/// Callers pass the args with clap's stripped `--` restored
+/// (`args_utils::restore_double_dash`): `git log -- -h` names a pathspec.
 fn requests_help(args: &[String]) -> bool {
     args.iter()
         .take_while(|arg| *arg != "--")
@@ -172,7 +175,7 @@ pub fn run(
     verbose: u8,
     global_args: &[String],
 ) -> Result<i32> {
-    if requests_help(args) {
+    if requests_help(&args_utils::restore_double_dash(args)) {
         let mut raw = vec![OsString::from(cmd.name())];
         if let GitCommand::Stash {
             subcommand: Some(sub),
