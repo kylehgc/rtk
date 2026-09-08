@@ -1808,11 +1808,48 @@ fn is_native_test_expression(command: &[String]) -> bool {
     }
 }
 
+/// Hand `--help`/`-h` to the wrapped tool on every subcommand that forwards
+/// trailing hyphen arguments, recursively.
+///
+/// Those subcommands pass every other flag through to the tool, and clap's
+/// auto help was the one it kept for itself: `rtk tsc --help` printed rtk's
+/// one-line stub instead of running tsc, and through the hook that is what
+/// `tsc --help` came back as. Subcommands with nothing to forward — rtk's own
+/// `gain`, `init`, `rewrite`, … — keep clap's help. `Psql` and `Ctest` opted
+/// out per-variant before this; the rule covers them and the ~100 siblings
+/// that never did.
+fn forward_help_to_wrapped_tools(cmd: clap::Command) -> clap::Command {
+    let forwards = cmd.get_positionals().any(|a| a.is_trailing_var_arg_set());
+    let cmd = if forwards {
+        cmd.disable_help_flag(true)
+    } else {
+        cmd
+    };
+    cmd.mut_subcommands(forward_help_to_wrapped_tools)
+}
+
+/// The clap command `main` parses with: the derived `Cli` after
+/// [`forward_help_to_wrapped_tools`].
+fn cli_command() -> clap::Command {
+    forward_help_to_wrapped_tools(<Cli as clap::CommandFactory>::command())
+}
+
+/// Parse argv the way `main` does. Tests reach for this rather than
+/// `Cli::try_parse_from` when the help-flag routing matters.
+fn parse_cli<I, T>(args: I) -> Result<Cli, clap::Error>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let matches = cli_command().try_get_matches_from(args)?;
+    <Cli as clap::FromArgMatches>::from_arg_matches(&matches)
+}
+
 fn run_cli() -> Result<i32> {
     // Fire-and-forget telemetry ping (1/day, non-blocking)
     core::telemetry::maybe_ping();
 
-    let cli = match Cli::try_parse_from(std::env::args_os()) {
+    let cli = match parse_cli(std::env::args_os()) {
         Ok(cli) => cli,
         Err(e) => {
             if matches!(e.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion) {
@@ -3082,6 +3119,86 @@ mod tests {
     use super::*;
     use clap::Parser;
     use std::cell::Cell;
+
+    // --- `--help` on wrapped tools reaches the tool (#165) ---
+
+    #[test]
+    fn test_parse_cli_forwards_help_to_wrapped_tool() {
+        // Through the hook the user typed `tsc --help`; rtk's one-line stub
+        // is not what they asked for.
+        for flag in ["--help", "-h"] {
+            let cli = parse_cli(["rtk", "tsc", flag])
+                .unwrap_or_else(|e| panic!("`rtk tsc {flag}` must parse, clap claimed it: {e}"));
+            match cli.command {
+                Commands::Tsc { args } => assert_eq!(args, vec![flag.to_string()]),
+                _ => panic!("expected Tsc"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_cli_forwards_help_alongside_rtk_options() {
+        // A wrapped tool that also parses rtk-only long options keeps them
+        // and still hands `--help` to the tool.
+        let cli = parse_cli(["rtk", "grep", "--max-len", "40", "--help"]).unwrap();
+        match cli.command {
+            Commands::Grep {
+                max_len,
+                extra_args,
+                ..
+            } => {
+                assert_eq!(max_len, 40);
+                assert_eq!(extra_args, vec!["--help".to_string()]);
+            }
+            _ => panic!("expected Grep"),
+        }
+    }
+
+    #[test]
+    fn test_parse_cli_forwards_help_to_nested_wrapped_tool() {
+        let cli = parse_cli(["rtk", "git", "log", "--help"]).unwrap();
+        match cli.command {
+            Commands::Git {
+                command: GitCommands::Log { args },
+                ..
+            } => assert_eq!(args, vec!["--help".to_string()]),
+            _ => panic!("expected git log"),
+        }
+    }
+
+    #[test]
+    fn test_parse_cli_keeps_help_on_meta_commands() {
+        // Nothing to forward to: rtk's own help stays.
+        for argv in [vec!["rtk", "--help"], vec!["rtk", "gain", "--help"]] {
+            let err = match parse_cli(argv.clone()) {
+                Err(e) => e,
+                Ok(_) => panic!("{argv:?}: help must be clap's"),
+            };
+            assert_eq!(err.kind(), ErrorKind::DisplayHelp, "{argv:?}");
+        }
+    }
+
+    #[test]
+    fn test_every_wrapped_tool_subcommand_forwards_help() {
+        // Total contract: a subcommand that forwards trailing hyphen args must
+        // not let clap claim `--help`; one that forwards nothing must keep it.
+        fn walk(cmd: &clap::Command, path: &str, seen: &mut usize) {
+            let forwards = cmd.get_positionals().any(|a| a.is_trailing_var_arg_set());
+            if forwards {
+                *seen += 1;
+                assert!(
+                    cmd.is_disable_help_flag_set(),
+                    "{path} forwards args but clap still owns --help"
+                );
+            }
+            for sub in cmd.get_subcommands() {
+                walk(sub, &format!("{path} {}", sub.get_name()), seen);
+            }
+        }
+        let mut seen = 0;
+        walk(&cli_command(), "rtk", &mut seen);
+        assert!(seen >= 100, "expected the wrapped-tool surface, saw {seen}");
+    }
 
     #[test]
     fn test_git_commit_single_message() {
