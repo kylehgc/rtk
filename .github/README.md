@@ -48,7 +48,7 @@ output *larger* and more correct. This fork does not claim to save more tokens t
 upstream — that is upstream's pitch. It claims to not lose your errors.
 
 <!-- FORK_DELTA_START -->
-**50 fixes in this fork that upstream does not have.** Each links to the commit,
+**56 fixes in this fork that upstream does not have.** Each links to the commit,
 where the original author is recorded. Adopted fixes come from community PRs that upstream
 has not merged — see the [adoption issues](https://github.com/kylehgc/rtk/issues?q=is%3Aissue+Adopt+upstream)
 for provenance.
@@ -60,6 +60,12 @@ upstream in another form.
 
 | Fix | Commit |
 |---|---|
+| fix(cli): cover the help guards end to end, skip rtk's package-runner prefix, disable clap's help subcommand on wrapped parents | [`66f1cb7`](https://github.com/kylehgc/rtk/commit/66f1cb7) |
+| fix(cli): exempt rtk format from help forwarding, opt prisma parents out, tree -h is a size flag | [`2a4dc09`](https://github.com/kylehgc/rtk/commit/2a4dc09) |
+| fix(cli): keep clap's help on rtk's shell runners, treat -h as help where the tool does, route find --help verbatim | [`372cf48`](https://github.com/kylehgc/rtk/commit/372cf48) |
+| fix(cli): route a forwarded --help to the tool's passthrough, not its filter | [`690c8a1`](https://github.com/kylehgc/rtk/commit/690c8a1) |
+| fix(cli): keep rtk's help on meta commands, forward it past external-arm parents, surface git's usage | [`2993807`](https://github.com/kylehgc/rtk/commit/2993807) |
+| fix(cli): hand --help/-h to the wrapped tool on every forwarding subcommand | [`beb45c2`](https://github.com/kylehgc/rtk/commit/beb45c2) |
 | fix(tsc): preserve informational output | [`bb0a9c8`](https://github.com/kylehgc/rtk/commit/bb0a9c8) |
 | fix(git): keep the trailing newline on filtered 'git status' output | [`d536891`](https://github.com/kylehgc/rtk/commit/d536891) |
 | fix(runner): drop the failure-only stderr forward superseded by #3772 | [`9ed2e49`](https://github.com/kylehgc/rtk/commit/9ed2e49) |
