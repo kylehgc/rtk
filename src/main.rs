@@ -1798,6 +1798,16 @@ where
     }
 }
 
+fn is_native_test_expression(command: &[String]) -> bool {
+    match command.first().map(String::as_str) {
+        // `!` and `(` are shell syntax too, so they only mark a native
+        // expression when what they apply to is one.
+        Some("!") | Some("(") => is_native_test_expression(&command[1..]),
+        Some(arg) => arg.starts_with('-'),
+        None => false,
+    }
+}
+
 fn run_cli() -> Result<i32> {
     // Fire-and-forget telemetry ping (1/day, non-blocking)
     core::telemetry::maybe_ping();
@@ -2071,8 +2081,13 @@ fn run_cli() -> Result<i32> {
         }
 
         Commands::Test { command } => {
-            let cmd = command.join(" ");
-            runner::run_test(&cmd, cli.verbose)?
+            if is_native_test_expression(&command) {
+                let args: Vec<OsString> = command.into_iter().map(OsString::from).collect();
+                core::runner::run_passthrough("test", &args, cli.verbose)?
+            } else {
+                let cmd = command.join(" ");
+                runner::run_test(&cmd, cli.verbose)?
+            }
         }
 
         Commands::Json {
@@ -3400,6 +3415,30 @@ mod tests {
             )),
             Ok(_) => panic!("Expected parse error for unknown subcommand"),
         }
+    }
+
+    #[test]
+    fn test_dash_d_routes_to_native_test_expression() {
+        let command = vec!["-d".to_string(), "graphify-out".to_string()];
+        assert!(is_native_test_expression(&command));
+    }
+
+    #[test]
+    fn test_bang_before_command_is_not_a_native_expression() {
+        let command = vec!["!".to_string(), "false".to_string()];
+        assert!(!is_native_test_expression(&command));
+    }
+
+    #[test]
+    fn test_bang_before_operator_is_a_native_expression() {
+        let command = vec!["!".to_string(), "-d".to_string(), "dir".to_string()];
+        assert!(is_native_test_expression(&command));
+    }
+
+    #[test]
+    fn test_cargo_test_stays_test_runner() {
+        let command = vec!["cargo".to_string(), "test".to_string()];
+        assert!(!is_native_test_expression(&command));
     }
 
     #[test]
