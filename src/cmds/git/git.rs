@@ -52,6 +52,22 @@ impl GitCommand {
             GitCommand::Worktree => "worktree",
         }
     }
+
+    /// Everything the user typed after the subcommand, in order. `Stash`
+    /// parses its first operand into its own positional, so it is put back
+    /// in front of `args`: `restore_double_dash` measures the user region by
+    /// length, and a `--` before that operand (`git stash -- -h`) would
+    /// otherwise be lost.
+    fn user_args(&self, args: &[String]) -> Vec<String> {
+        match self {
+            GitCommand::Stash {
+                subcommand: Some(sub),
+            } => std::iter::once(sub.clone())
+                .chain(args.iter().cloned())
+                .collect(),
+            _ => args.to_vec(),
+        }
+    }
 }
 
 /// `-h` or `--help` before any `--` asks git for the subcommand's usage. git
@@ -175,15 +191,11 @@ pub fn run(
     verbose: u8,
     global_args: &[String],
 ) -> Result<i32> {
-    if requests_help(&args_utils::restore_double_dash(args)) {
-        let mut raw = vec![OsString::from(cmd.name())];
-        if let GitCommand::Stash {
-            subcommand: Some(sub),
-        } = &cmd
-        {
-            raw.push(OsString::from(sub));
-        }
-        raw.extend(args.iter().map(OsString::from));
+    let user_args = args_utils::restore_double_dash(&cmd.user_args(args));
+    if requests_help(&user_args) {
+        let raw: Vec<OsString> = std::iter::once(OsString::from(cmd.name()))
+            .chain(user_args.iter().map(OsString::from))
+            .collect();
         return run_passthrough(&raw, global_args, verbose);
     }
     match cmd {
@@ -2850,6 +2862,29 @@ mod tests {
         // After `--` it is a pathspec, not a request for usage.
         assert!(!requests_help(&a(&["--", "-h"])));
         assert!(!requests_help(&a(&["--", "--help"])));
+    }
+
+    #[test]
+    fn test_stash_operand_rejoins_the_user_region_before_restoring_double_dash() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // `rtk git stash -- -h`: clap put `-h` in `subcommand`, args is empty.
+        let cmd = GitCommand::Stash {
+            subcommand: Some("-h".to_string()),
+        };
+        let raw = a(&["rtk", "git", "stash", "--", "-h"]);
+        let restored = args_utils::restore_double_dash_with_raw(&cmd.user_args(&[]), &raw);
+        assert_eq!(restored, a(&["--", "-h"]));
+        assert!(!requests_help(&restored), "`-- -h` is an operand, not help");
+        // Without the operand the region is one short and the `--` is lost.
+        assert_eq!(
+            args_utils::restore_double_dash_with_raw(&[], &raw),
+            a(&["-h"])
+        );
+        // `rtk git stash list -h` still asks for usage.
+        let cmd = GitCommand::Stash {
+            subcommand: Some("list".to_string()),
+        };
+        assert!(requests_help(&cmd.user_args(&a(&["-h"]))));
     }
 
     #[test]

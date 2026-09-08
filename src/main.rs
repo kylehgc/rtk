@@ -136,7 +136,7 @@ enum Commands {
 
     /// Git commands with compact output
     // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
-    #[command(disable_help_flag = true)]
+    #[command(disable_help_flag = true, disable_help_subcommand = true)]
     Git {
         /// Change to directory before executing (like git -C <path>, can be repeated)
         #[arg(short = 'C', action = clap::ArgAction::Append)]
@@ -217,7 +217,7 @@ enum Commands {
 
     /// pnpm commands with ultra-compact output
     // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
-    #[command(disable_help_flag = true)]
+    #[command(disable_help_flag = true, disable_help_subcommand = true)]
     Pnpm {
         /// pnpm filter arguments (can be repeated: --filter @app1 --filter @app2)
         #[arg(long, short = 'F')]
@@ -290,7 +290,7 @@ enum Commands {
 
     /// .NET commands with compact output (build/test/restore/format)
     // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
-    #[command(disable_help_flag = true)]
+    #[command(disable_help_flag = true, disable_help_subcommand = true)]
     Dotnet {
         #[command(subcommand)]
         command: DotnetCommands,
@@ -298,7 +298,7 @@ enum Commands {
 
     /// Docker commands with compact output
     // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
-    #[command(disable_help_flag = true)]
+    #[command(disable_help_flag = true, disable_help_subcommand = true)]
     Docker {
         #[command(subcommand)]
         command: DockerCommands,
@@ -306,7 +306,7 @@ enum Commands {
 
     /// Kubectl commands with compact output
     // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
-    #[command(disable_help_flag = true)]
+    #[command(disable_help_flag = true, disable_help_subcommand = true)]
     Kubectl {
         #[command(subcommand)]
         command: KubectlCommands,
@@ -314,7 +314,7 @@ enum Commands {
 
     /// OpenShift CLI (oc) commands with compact output
     // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
-    #[command(disable_help_flag = true)]
+    #[command(disable_help_flag = true, disable_help_subcommand = true)]
     Oc {
         #[command(subcommand)]
         command: OcCommands,
@@ -541,7 +541,7 @@ enum Commands {
 
     /// Prisma commands with compact output (no ASCII art)
     // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
-    #[command(disable_help_flag = true)]
+    #[command(disable_help_flag = true, disable_help_subcommand = true)]
     Prisma {
         #[command(subcommand)]
         command: PrismaCommands,
@@ -591,7 +591,7 @@ enum Commands {
 
     /// Cargo commands with compact output
     // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
-    #[command(disable_help_flag = true)]
+    #[command(disable_help_flag = true, disable_help_subcommand = true)]
     Cargo {
         #[command(subcommand)]
         command: CargoCommands,
@@ -613,7 +613,7 @@ enum Commands {
 
     /// Bun runtime commands with compact output
     // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
-    #[command(disable_help_flag = true)]
+    #[command(disable_help_flag = true, disable_help_subcommand = true)]
     Bun {
         #[command(subcommand)]
         command: BunCommands,
@@ -858,7 +858,7 @@ enum Commands {
 
     /// Deno runtime commands with compact output
     // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
-    #[command(disable_help_flag = true)]
+    #[command(disable_help_flag = true, disable_help_subcommand = true)]
     Deno {
         #[command(subcommand)]
         command: DenoCommands,
@@ -866,7 +866,7 @@ enum Commands {
 
     /// Go commands with compact output
     // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
-    #[command(disable_help_flag = true)]
+    #[command(disable_help_flag = true, disable_help_subcommand = true)]
     Go {
         #[command(subcommand)]
         command: GoCommands,
@@ -874,7 +874,7 @@ enum Commands {
 
     /// SBT (Scala Build Tool) commands with compact output
     // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
-    #[command(disable_help_flag = true)]
+    #[command(disable_help_flag = true, disable_help_subcommand = true)]
     Sbt {
         #[command(subcommand)]
         command: SbtCommands,
@@ -882,7 +882,7 @@ enum Commands {
 
     /// Graphite (gt) stacked PR commands with compact output
     // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
-    #[command(disable_help_flag = true)]
+    #[command(disable_help_flag = true, disable_help_subcommand = true)]
     Gt {
         #[command(subcommand)]
         command: GtCommands,
@@ -1108,7 +1108,7 @@ enum DockerCommands {
     Logs { container: String },
     /// Docker Compose commands with compact output
     // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
-    #[command(disable_help_flag = true)]
+    #[command(disable_help_flag = true, disable_help_subcommand = true)]
     Compose {
         #[command(subcommand)]
         command: ComposeCommands,
@@ -1223,7 +1223,7 @@ enum PrismaCommands {
     },
     /// Manage migrations
     // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
-    #[command(disable_help_flag = true)]
+    #[command(disable_help_flag = true, disable_help_subcommand = true)]
     Migrate {
         #[command(subcommand)]
         command: PrismaMigrateCommands,
@@ -1415,7 +1415,7 @@ enum BunCommands {
     },
     /// Package manager commands (pm ls, etc.)
     // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
-    #[command(disable_help_flag = true)]
+    #[command(disable_help_flag = true, disable_help_subcommand = true)]
     Pm {
         #[command(subcommand)]
         command: BunPmCommands,
@@ -1856,19 +1856,24 @@ fn is_native_test_expression(command: &[String]) -> bool {
 ///
 /// Parents whose passthrough is an `external_subcommand` arm (`rtk git <any>`)
 /// cannot be told apart here: clap records that arm only while building, after
-/// this pass. Those parents carry `#[command(disable_help_flag = true)]` on
-/// the variant. That setting is global in clap, so it also reaches their
-/// children that forward nothing (`rtk docker logs --help` runs docker) — the
-/// attribute is load-bearing for the whole subtree, not only the parent.
-/// `test_every_wrapped_tool_subcommand_forwards_help` builds the command to
-/// hold both groups to the same contract.
+/// this pass. Those parents carry `#[command(disable_help_flag = true,
+/// disable_help_subcommand = true)]` on the variant: the flag setting is
+/// global in clap, so it also reaches their children that forward nothing
+/// (`rtk docker logs --help` runs docker), and the subcommand setting keeps
+/// clap's `help` subcommand from claiming `rtk git help log` — `help` then
+/// reaches the tool through the external arm, or fails the parse and runs the
+/// raw tool. The attributes are load-bearing for the whole subtree, not only
+/// the parent. `test_every_wrapped_tool_subcommand_forwards_help` builds the
+/// command to hold both groups to the same contract.
 fn forward_help_to_wrapped_tools(cmd: clap::Command) -> clap::Command {
     forward_help_below(cmd, 0, false)
 }
 
 /// rtk subcommands that take a trailing command but run it themselves —
 /// through `sh -c` (`err`, `test`, `summary`) or a detected formatter
-/// (`format`) — so there is no one tool to receive `--help`.
+/// (`format`) — so there is no one tool to receive `--help`. A new rtk-own
+/// runner with a trailing command must be added here, or `--help` on it
+/// falls through to a tool that does not exist.
 const RTK_OWN_RUNNERS: &[&str] = &["err", "test", "summary", "format"];
 
 /// A top-level subcommand that is rtk's own: `--help` on it means rtk's help.
@@ -3249,6 +3254,16 @@ mod tests {
             Ok(_) => panic!("`--help` parsed as something other than git's external arm"),
         }
 
+        // clap's `help` subcommand is rtk's stub too: `git help log` is git's.
+        let cli = parse_cli(["rtk", "git", "help", "log"]).unwrap();
+        match cli.command {
+            Commands::Git {
+                command: GitCommands::Other(args),
+                ..
+            } => assert_eq!(args, vec![OsString::from("help"), OsString::from("log")]),
+            _ => panic!("`git help log` must reach git's external arm"),
+        }
+
         let cli = parse_cli(["rtk", "git", "bisect", "--help"]).unwrap();
         match cli.command {
             Commands::Git {
@@ -3314,6 +3329,12 @@ mod tests {
                     cmd.is_disable_help_flag_set(),
                     "{path} forwards args but clap still owns --help"
                 );
+                if cmd.has_subcommands() {
+                    assert!(
+                        cmd.is_disable_help_subcommand_set(),
+                        "{path} forwards args but clap still owns `help <sub>`"
+                    );
+                }
             } else if meta {
                 assert!(
                     !cmd.is_disable_help_flag_set(),
