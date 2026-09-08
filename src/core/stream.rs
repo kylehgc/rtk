@@ -607,7 +607,7 @@ fn capture(cmd: &mut Command) -> Result<CaptureResult> {
             .stderr(Stdio::inherit())
             .status()
             .with_context(|| format!("Failed to execute {program}"))?;
-        std::process::exit(status.code().unwrap_or(1));
+        std::process::exit(super::utils::exit_code_from_status(&status, &program));
     }
     let output = cmd.output().context("Failed to execute command")?;
     let exit_code = super::utils::exit_code_from_output(&output, &program);

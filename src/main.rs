@@ -540,6 +540,8 @@ enum Commands {
     },
 
     /// Prisma commands with compact output (no ASCII art)
+    // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
+    #[command(disable_help_flag = true)]
     Prisma {
         #[command(subcommand)]
         command: PrismaCommands,
@@ -1220,6 +1222,8 @@ enum PrismaCommands {
         args: Vec<String>,
     },
     /// Manage migrations
+    // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
+    #[command(disable_help_flag = true)]
     Migrate {
         #[command(subcommand)]
         command: PrismaMigrateCommands,
@@ -1844,7 +1848,7 @@ fn is_native_test_expression(command: &[String]) -> bool {
 /// tsc, and through the hook that is what `tsc --help` came back as.
 ///
 /// The exact exemption is [`keeps_clap_help`]: rtk's own entry points
-/// (`RTK_META_COMMANDS`, plus the `sh -c` runners `err`, `test`, `summary`),
+/// (`RTK_META_COMMANDS`, plus `RTK_OWN_RUNNERS`: `err`, `test`, `summary`, `format`),
 /// and everything beneath them (`rtk hook check <args>`), keep clap's help
 /// even when they take a trailing command, because there is no tool to hand
 /// it to. Subcommands with nothing to forward (`gain`, `init`, …) are
@@ -1862,13 +1866,14 @@ fn forward_help_to_wrapped_tools(cmd: clap::Command) -> clap::Command {
     forward_help_below(cmd, 0, false)
 }
 
-/// rtk subcommands that take a trailing command but run it themselves
-/// (`sh -c`), so there is no tool to receive `--help`.
-const SHELL_RUNNERS: &[&str] = &["err", "test", "summary"];
+/// rtk subcommands that take a trailing command but run it themselves —
+/// through `sh -c` (`err`, `test`, `summary`) or a detected formatter
+/// (`format`) — so there is no one tool to receive `--help`.
+const RTK_OWN_RUNNERS: &[&str] = &["err", "test", "summary", "format"];
 
 /// A top-level subcommand that is rtk's own: `--help` on it means rtk's help.
 fn keeps_clap_help(name: &str) -> bool {
-    core::constants::RTK_META_COMMANDS.contains(&name) || SHELL_RUNNERS.contains(&name)
+    core::constants::RTK_META_COMMANDS.contains(&name) || RTK_OWN_RUNNERS.contains(&name)
 }
 
 /// `depth` 1 is a direct child of `rtk`: the rtk-owned names are only rtk's
@@ -3272,6 +3277,7 @@ mod tests {
             vec!["rtk", "err", "--help"],
             vec!["rtk", "test", "--help"],
             vec!["rtk", "summary", "--help"],
+            vec!["rtk", "format", "--help"],
         ] {
             let err = match parse_cli(argv.clone()) {
                 Err(e) => e,
@@ -3287,8 +3293,15 @@ mod tests {
         // hyphen args or an external subcommand) must not let clap claim
         // `--help`; a meta command or one that forwards nothing must keep it.
         fn walk(cmd: &clap::Command, path: &str, depth: usize, under_meta: bool, seen: &mut usize) {
-            let forwards = cmd.get_positionals().any(|a| a.is_trailing_var_arg_set())
-                || cmd.is_allow_external_subcommands_set();
+            // A parent counts as forwarding when any subcommand of its own does:
+            // `rtk prisma --help` is prisma's even though `prisma` itself takes
+            // no trailing args.
+            fn forwards(cmd: &clap::Command) -> bool {
+                cmd.get_positionals().any(|a| a.is_trailing_var_arg_set())
+                    || cmd.is_allow_external_subcommands_set()
+                    || cmd.get_subcommands().any(forwards)
+            }
+            let forwards = depth > 0 && forwards(cmd);
             let meta = under_meta || (depth == 1 && keeps_clap_help(cmd.get_name()));
             if meta && cmd.get_name() == "help" {
                 // clap's own `help` subcommand (and its per-subcommand

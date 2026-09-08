@@ -172,9 +172,9 @@ where
 }
 
 /// Tools that define `-h` as something other than help: `psql -h host`,
-/// `ls -h` (human sizes), `grep`/`rg -h` (no filename). Everywhere else a
-/// bare `-h` is the usage request it is for cargo, go, dotnet, git, …
-const DASH_H_IS_NOT_HELP: &[&str] = &["psql", "ls", "grep", "rg"];
+/// `ls`/`tree -h` (human sizes), `grep`/`rg -h` (no filename). Everywhere
+/// else a bare `-h` is the usage request it is for cargo, go, dotnet, git, …
+const DASH_H_IS_NOT_HELP: &[&str] = &["psql", "ls", "tree", "grep", "rg"];
 
 /// `--help` (or `-h`, unless the tool defines it) before any `--` asks the
 /// tool for its usage. A filter models the tool's normal output, so it reads
@@ -962,6 +962,7 @@ mod err_test_runner_tests {
         )));
         assert!(!requests_help(&build("C:\\tools\\ls.exe", &["-lh"])));
         assert!(!requests_help(&build("ls", &["-h"])));
+        assert!(!requests_help(&build("tree", &["-h", "-L", "2"])));
         assert!(!requests_help(&build("grep", &["-h", "pattern", "a", "b"])));
         assert!(!requests_help(&build("rg.exe", &["-h", "x"])));
         // …but `--help` is help for them too.
