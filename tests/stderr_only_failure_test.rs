@@ -186,7 +186,7 @@ fn lint_issues_are_summarised_and_exit_zero() {
 
 /// git answers `-h` with its usage on **stdout** and exit 129. Once `rtk git
 /// log -h` / `rtk git status -h` forward the flag (they used to be clap's), the
-/// filters' failure branches must hand that stdout back, not just stderr.
+/// call must reach the user as git's usage — not as a filter's reading of it.
 #[test]
 fn forwarded_help_keeps_gits_stdout_usage() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -204,4 +204,28 @@ fn forwarded_help_keeps_gits_stdout_usage() {
             "git {sub} -h usage must reach stdout, got {stdout:?}"
         );
     }
+}
+
+/// A tool's usage is not filter input. `rtk wget --help` used to reach the
+/// wget filter, which read the usage text as a failed download; the capture
+/// helper now shows it as the tool printed it and exits with the tool's code.
+#[test]
+fn forwarded_help_on_a_captured_tool_is_shown_verbatim() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fake_tool(
+        dir.path(),
+        "wget",
+        "echo \"Usage: wget [OPTION]... [URL]...\"; echo \"Try --help for more options.\"; exit 0",
+    );
+    let out = rtk_with(dir.path(), &["wget", "--help"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        stdout.contains("Usage: wget [OPTION]"),
+        "usage must reach stdout verbatim, got {stdout:?}"
+    );
+    assert!(
+        !stdout.to_lowercase().contains("fail") && !stdout.contains("rtk"),
+        "no filter summary under the usage, got {stdout:?}"
+    );
 }

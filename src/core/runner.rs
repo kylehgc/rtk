@@ -171,6 +171,19 @@ where
     Ok(exit_code)
 }
 
+/// `--help` before any `--` asks the tool for its usage. A filter models the
+/// tool's normal output, so it reads that usage as an empty run: `cargo build
+/// --help` summarised as "0 crates compiled", `cargo test --help` as nothing.
+/// Usage is not a filtering job; it goes through the passthrough verbatim.
+///
+/// `-h` is the tool's to define (`psql -h host`, `ls -h`) and stays with the
+/// filter that knows its tool.
+pub fn requests_help(cmd: &Command) -> bool {
+    cmd.get_args()
+        .take_while(|arg| *arg != "--")
+        .any(|arg| arg == "--help")
+}
+
 pub fn run(
     mut cmd: Command,
     tool_name: &str,
@@ -178,6 +191,11 @@ pub fn run(
     mode: RunMode<'_>,
     opts: RunOptions<'_>,
 ) -> Result<i32> {
+    let mode = if requests_help(&cmd) {
+        RunMode::Passthrough
+    } else {
+        mode
+    };
     let timer = tracking::TimedExecution::start();
     let cmd_label = format!("{} {}", tool_name, args_display);
 
@@ -903,6 +921,22 @@ fn is_bun_count_line(trimmed: &str) -> bool {
 #[cfg(test)]
 mod err_test_runner_tests {
     use super::*;
+
+    #[test]
+    fn test_requests_help_reads_only_the_tools_own_flags() {
+        let build = |args: &[&str]| {
+            let mut c = Command::new("tool");
+            c.args(args);
+            c
+        };
+        assert!(requests_help(&build(&["--help"])));
+        assert!(requests_help(&build(&["build", "--release", "--help"])));
+        assert!(!requests_help(&build(&[])));
+        assert!(!requests_help(&build(&["build", "--release"])));
+        // `-h` belongs to the tool; `--help` after `--` is an operand.
+        assert!(!requests_help(&build(&["-h"])));
+        assert!(!requests_help(&build(&["--", "--help"])));
+    }
 
     #[test]
     fn test_filter_errors() {

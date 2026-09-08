@@ -1843,10 +1843,11 @@ fn is_native_test_expression(command: &[String]) -> bool {
 /// kept, so `rtk tsc --help` printed rtk's one-line stub instead of running
 /// tsc, and through the hook that is what `tsc --help` came back as.
 ///
-/// The exact exemption is `RTK_META_COMMANDS`: rtk's own entry points keep
-/// clap's help even when they take a trailing command (`proxy`, `run`,
-/// `rewrite`), because there is no tool to hand it to. Subcommands with
-/// nothing to forward (`gain`, `init`, …) are untouched by construction.
+/// The exact exemption is `RTK_META_COMMANDS`: rtk's own entry points, and
+/// everything beneath them (`rtk hook check <args>`), keep clap's help even
+/// when they take a trailing command (`proxy`, `run`, `rewrite`), because
+/// there is no tool to hand it to. Subcommands with nothing to forward
+/// (`gain`, `init`, …) are untouched by construction.
 ///
 /// Parents whose passthrough is an `external_subcommand` arm (`rtk git <any>`)
 /// cannot be told apart here: clap records that arm only while building, after
@@ -1854,20 +1855,22 @@ fn is_native_test_expression(command: &[String]) -> bool {
 /// the variant, and `test_every_wrapped_tool_subcommand_forwards_help` builds
 /// the command to hold both groups to the same contract.
 fn forward_help_to_wrapped_tools(cmd: clap::Command) -> clap::Command {
-    forward_help_below(cmd, 0)
+    forward_help_below(cmd, 0, false)
 }
 
 /// `depth` 1 is a direct child of `rtk`: the meta-command names are only
-/// rtk's own there (`rtk run` is, `rtk bun run` is bun's).
-fn forward_help_below(cmd: clap::Command, depth: usize) -> clap::Command {
-    let meta = depth == 1 && core::constants::RTK_META_COMMANDS.contains(&cmd.get_name());
+/// rtk's own there (`rtk run` is, `rtk bun run` is bun's). `under_meta`
+/// carries that verdict down to the meta command's own subcommands.
+fn forward_help_below(cmd: clap::Command, depth: usize, under_meta: bool) -> clap::Command {
+    let meta =
+        under_meta || (depth == 1 && core::constants::RTK_META_COMMANDS.contains(&cmd.get_name()));
     let forwards = cmd.get_positionals().any(|a| a.is_trailing_var_arg_set()) && !meta;
     let cmd = if forwards {
         cmd.disable_help_flag(true)
     } else {
         cmd
     };
-    cmd.mut_subcommands(|sub| forward_help_below(sub, depth + 1))
+    cmd.mut_subcommands(|sub| forward_help_below(sub, depth + 1, meta))
 }
 
 /// The clap command `main` parses with: the derived `Cli` after
@@ -3252,6 +3255,7 @@ mod tests {
             vec!["rtk", "proxy", "--help"],
             vec!["rtk", "run", "--help"],
             vec!["rtk", "rewrite", "--help"],
+            vec!["rtk", "hook", "check", "--help"],
         ] {
             let err = match parse_cli(argv.clone()) {
                 Err(e) => e,
@@ -3266,10 +3270,16 @@ mod tests {
         // Total contract: a subcommand that forwards to a tool (trailing
         // hyphen args or an external subcommand) must not let clap claim
         // `--help`; a meta command or one that forwards nothing must keep it.
-        fn walk(cmd: &clap::Command, path: &str, depth: usize, seen: &mut usize) {
+        fn walk(cmd: &clap::Command, path: &str, depth: usize, under_meta: bool, seen: &mut usize) {
             let forwards = cmd.get_positionals().any(|a| a.is_trailing_var_arg_set())
                 || cmd.is_allow_external_subcommands_set();
-            let meta = depth == 1 && core::constants::RTK_META_COMMANDS.contains(&cmd.get_name());
+            let meta = under_meta
+                || (depth == 1 && core::constants::RTK_META_COMMANDS.contains(&cmd.get_name()));
+            if meta && cmd.get_name() == "help" {
+                // clap's own `help` subcommand (and its per-subcommand
+                // children) disable the flag on themselves.
+                return;
+            }
             if forwards && !meta {
                 *seen += 1;
                 assert!(
@@ -3283,14 +3293,20 @@ mod tests {
                 );
             }
             for sub in cmd.get_subcommands() {
-                walk(sub, &format!("{path} {}", sub.get_name()), depth + 1, seen);
+                walk(
+                    sub,
+                    &format!("{path} {}", sub.get_name()),
+                    depth + 1,
+                    meta,
+                    seen,
+                );
             }
         }
         let mut seen = 0;
         // Built, so the external-subcommand arms are visible to the walk.
         let mut cmd = cli_command();
         cmd.build();
-        walk(&cmd, "rtk", 0, &mut seen);
+        walk(&cmd, "rtk", 0, false, &mut seen);
         assert!(seen >= 100, "expected the wrapped-tool surface, saw {seen}");
     }
 

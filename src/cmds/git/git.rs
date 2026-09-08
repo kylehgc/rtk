@@ -33,6 +33,38 @@ pub enum GitCommand {
     Worktree,
 }
 
+impl GitCommand {
+    /// The git subcommand this arm runs, as the user would type it.
+    fn name(&self) -> &'static str {
+        match self {
+            GitCommand::Diff => "diff",
+            GitCommand::Log => "log",
+            GitCommand::Status => "status",
+            GitCommand::Show => "show",
+            GitCommand::Add => "add",
+            GitCommand::Commit => "commit",
+            GitCommand::Checkout => "checkout",
+            GitCommand::Push => "push",
+            GitCommand::Pull => "pull",
+            GitCommand::Branch => "branch",
+            GitCommand::Fetch => "fetch",
+            GitCommand::Stash { .. } => "stash",
+            GitCommand::Worktree => "worktree",
+        }
+    }
+}
+
+/// `-h` or `--help` before any `--` asks git for the subcommand's usage. git
+/// prints it on stdout with exit 129 (or opens the manual), and every filter
+/// here reads stdout as the subcommand's normal output: `git worktree -h`
+/// listed worktrees, `git show -h` printed nothing. Such a call is not a
+/// filtering job, so it runs through the passthrough unchanged.
+fn requests_help(args: &[String]) -> bool {
+    args.iter()
+        .take_while(|arg| *arg != "--")
+        .any(|arg| arg == "-h" || arg == "--help")
+}
+
 /// Create a git Command with global options (e.g. -C, -c, --git-dir, --work-tree)
 /// prepended before any subcommand arguments.
 fn git_cmd(global_args: &[String]) -> Command {
@@ -140,6 +172,17 @@ pub fn run(
     verbose: u8,
     global_args: &[String],
 ) -> Result<i32> {
+    if requests_help(args) {
+        let mut raw = vec![OsString::from(cmd.name())];
+        if let GitCommand::Stash {
+            subcommand: Some(sub),
+        } = &cmd
+        {
+            raw.push(OsString::from(sub));
+        }
+        raw.extend(args.iter().map(OsString::from));
+        return run_passthrough(&raw, global_args, verbose);
+    }
     match cmd {
         GitCommand::Diff => run_diff(args, max_lines, verbose, global_args),
         GitCommand::Log => run_log(args, max_lines, verbose, global_args),
@@ -991,9 +1034,6 @@ fn run_log(
     let result = exec_capture(&mut cmd).context("Failed to run git log")?;
 
     if !result.success() {
-        // git answers `-h`/`--help` with its usage on stdout and exit 129;
-        // dropping stdout here left that answer blank.
-        print!("{}", result.stdout);
         eprintln!("{}", result.stderr);
         return Ok(result.exit_code);
     }
@@ -1533,8 +1573,6 @@ fn run_status(args: &[String], verbose: u8, global_args: &[String]) -> Result<i3
         let result = exec_capture(&mut cmd).context("Failed to run git status")?;
 
         if !result.success() {
-            // git answers `-h`/`--help` with its usage on stdout and exit 129.
-            print!("{}", result.stdout);
             if !result.stderr.trim().is_empty() {
                 eprint!("{}", result.stderr);
             }
@@ -2798,6 +2836,25 @@ pub fn run_passthrough(args: &[OsString], global_args: &[String], verbose: u8) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_requests_help_before_double_dash_only() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(requests_help(&a(&["-h"])));
+        assert!(requests_help(&a(&["--oneline", "--help"])));
+        assert!(!requests_help(&a(&[])));
+        assert!(!requests_help(&a(&["--oneline", "-5"])));
+        // After `--` it is a pathspec, not a request for usage.
+        assert!(!requests_help(&a(&["--", "-h"])));
+        assert!(!requests_help(&a(&["--", "--help"])));
+    }
+
+    #[test]
+    fn test_git_command_names_match_the_subcommand() {
+        assert_eq!(GitCommand::Log.name(), "log");
+        assert_eq!(GitCommand::Stash { subcommand: None }.name(), "stash");
+        assert_eq!(GitCommand::Worktree.name(), "worktree");
+    }
 
     #[test]
     fn test_git_cmd_no_global_args() {

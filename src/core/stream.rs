@@ -589,6 +589,19 @@ pub fn exec_capture_stdin(cmd: &mut Command) -> Result<CaptureResult> {
 /// used as the label so no call site has to pass one.
 fn capture(cmd: &mut Command) -> Result<CaptureResult> {
     let program = cmd.get_program().to_string_lossy().into_owned();
+    // `--help` asks the tool for its usage, and no caller here can read usage
+    // as the output it filters (see `runner::requests_help`). The usage is
+    // shown as the tool prints it and the process ends with the tool's code:
+    // there is no captured output to hand back, and formatting an empty
+    // capture would append a false summary under it.
+    if super::runner::requests_help(cmd) {
+        let status = cmd
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .with_context(|| format!("Failed to execute {program}"))?;
+        std::process::exit(status.code().unwrap_or(1));
+    }
     let output = cmd.output().context("Failed to execute command")?;
     let exit_code = super::utils::exit_code_from_output(&output, &program);
     Ok(CaptureResult {
