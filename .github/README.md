@@ -48,7 +48,7 @@ output *larger* and more correct. This fork does not claim to save more tokens t
 upstream — that is upstream's pitch. It claims to not lose your errors.
 
 <!-- FORK_DELTA_START -->
-**49 fixes in this fork that upstream does not have.** Each links to the commit,
+**50 fixes in this fork that upstream does not have.** Each links to the commit,
 where the original author is recorded. Adopted fixes come from community PRs that upstream
 has not merged — see the [adoption issues](https://github.com/kylehgc/rtk/issues?q=is%3Aissue+Adopt+upstream)
 for provenance.
@@ -60,6 +60,7 @@ upstream in another form.
 
 | Fix | Commit |
 |---|---|
+| fix(tsc): preserve informational output | [`bb0a9c8`](https://github.com/kylehgc/rtk/commit/bb0a9c8) |
 | fix(git): keep the trailing newline on filtered 'git status' output | [`d536891`](https://github.com/kylehgc/rtk/commit/d536891) |
 | fix(runner): drop the failure-only stderr forward superseded by #3772 | [`9ed2e49`](https://github.com/kylehgc/rtk/commit/9ed2e49) |
 | fix(core): forward stderr from stdout-only filters and count it | [`12db983`](https://github.com/kylehgc/rtk/commit/12db983) |
