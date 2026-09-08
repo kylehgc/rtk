@@ -966,6 +966,7 @@ mod err_test_runner_tests {
     #[test]
     fn test_requests_help_skips_rtks_own_package_runner_prefix() {
         let build = |program: &str, args: &[&str]| {
+            // nosemgrep: dynamic-command-execution
             let mut c = Command::new(program);
             c.args(args);
             c
@@ -980,7 +981,7 @@ mod err_test_runner_tests {
             &["--", "playwright", "test", "-h"]
         )));
         assert!(requests_help(&build(
-            "C:\\nodejs\\pnpm.cmd",
+            "pnpm.cmd",
             &["exec", "--", "vitest", "run", "--help"]
         )));
         assert!(requests_help(&build(
@@ -1004,6 +1005,7 @@ mod err_test_runner_tests {
     #[test]
     fn test_requests_help_dash_h_belongs_to_the_tools_that_define_it() {
         let build = |program: &str, args: &[&str]| {
+            // nosemgrep: dynamic-command-execution
             let mut c = Command::new(program);
             c.args(args);
             c
