@@ -135,6 +135,8 @@ enum Commands {
     },
 
     /// Git commands with compact output
+    // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
+    #[command(disable_help_flag = true)]
     Git {
         /// Change to directory before executing (like git -C <path>, can be repeated)
         #[arg(short = 'C', action = clap::ArgAction::Append)]
@@ -214,6 +216,8 @@ enum Commands {
     },
 
     /// pnpm commands with ultra-compact output
+    // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
+    #[command(disable_help_flag = true)]
     Pnpm {
         /// pnpm filter arguments (can be repeated: --filter @app1 --filter @app2)
         #[arg(long, short = 'F')]
@@ -285,24 +289,32 @@ enum Commands {
     },
 
     /// .NET commands with compact output (build/test/restore/format)
+    // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
+    #[command(disable_help_flag = true)]
     Dotnet {
         #[command(subcommand)]
         command: DotnetCommands,
     },
 
     /// Docker commands with compact output
+    // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
+    #[command(disable_help_flag = true)]
     Docker {
         #[command(subcommand)]
         command: DockerCommands,
     },
 
     /// Kubectl commands with compact output
+    // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
+    #[command(disable_help_flag = true)]
     Kubectl {
         #[command(subcommand)]
         command: KubectlCommands,
     },
 
     /// OpenShift CLI (oc) commands with compact output
+    // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
+    #[command(disable_help_flag = true)]
     Oc {
         #[command(subcommand)]
         command: OcCommands,
@@ -576,6 +588,8 @@ enum Commands {
     },
 
     /// Cargo commands with compact output
+    // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
+    #[command(disable_help_flag = true)]
     Cargo {
         #[command(subcommand)]
         command: CargoCommands,
@@ -596,6 +610,8 @@ enum Commands {
     },
 
     /// Bun runtime commands with compact output
+    // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
+    #[command(disable_help_flag = true)]
     Bun {
         #[command(subcommand)]
         command: BunCommands,
@@ -839,24 +855,32 @@ enum Commands {
     },
 
     /// Deno runtime commands with compact output
+    // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
+    #[command(disable_help_flag = true)]
     Deno {
         #[command(subcommand)]
         command: DenoCommands,
     },
 
     /// Go commands with compact output
+    // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
+    #[command(disable_help_flag = true)]
     Go {
         #[command(subcommand)]
         command: GoCommands,
     },
 
     /// SBT (Scala Build Tool) commands with compact output
+    // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
+    #[command(disable_help_flag = true)]
     Sbt {
         #[command(subcommand)]
         command: SbtCommands,
     },
 
     /// Graphite (gt) stacked PR commands with compact output
+    // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
+    #[command(disable_help_flag = true)]
     Gt {
         #[command(subcommand)]
         command: GtCommands,
@@ -1081,6 +1105,8 @@ enum DockerCommands {
     /// Show container logs (deduplicated)
     Logs { container: String },
     /// Docker Compose commands with compact output
+    // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
+    #[command(disable_help_flag = true)]
     Compose {
         #[command(subcommand)]
         command: ComposeCommands,
@@ -1384,6 +1410,8 @@ enum BunCommands {
         args: Vec<String>,
     },
     /// Package manager commands (pm ls, etc.)
+    // `--help` belongs to the tool: see forward_help_to_wrapped_tools.
+    #[command(disable_help_flag = true)]
     Pm {
         #[command(subcommand)]
         command: BunPmCommands,
@@ -1808,24 +1836,38 @@ fn is_native_test_expression(command: &[String]) -> bool {
     }
 }
 
-/// Hand `--help`/`-h` to the wrapped tool on every subcommand that forwards
-/// trailing hyphen arguments, recursively.
+/// Hand `--help`/`-h` to the wrapped tool instead of clap, recursively.
 ///
-/// Those subcommands pass every other flag through to the tool, and clap's
-/// auto help was the one it kept for itself: `rtk tsc --help` printed rtk's
-/// one-line stub instead of running tsc, and through the hook that is what
-/// `tsc --help` came back as. Subcommands with nothing to forward — rtk's own
-/// `gain`, `init`, `rewrite`, … — keep clap's help. `Psql` and `Ctest` opted
-/// out per-variant before this; the rule covers them and the ~100 siblings
-/// that never did.
+/// A subcommand that carries a trailing-var-arg positional (`rtk tsc <args>`)
+/// forwards every other flag to the tool; clap's auto help was the one it
+/// kept, so `rtk tsc --help` printed rtk's one-line stub instead of running
+/// tsc, and through the hook that is what `tsc --help` came back as.
+///
+/// The exact exemption is `RTK_META_COMMANDS`: rtk's own entry points keep
+/// clap's help even when they take a trailing command (`proxy`, `run`,
+/// `rewrite`), because there is no tool to hand it to. Subcommands with
+/// nothing to forward (`gain`, `init`, …) are untouched by construction.
+///
+/// Parents whose passthrough is an `external_subcommand` arm (`rtk git <any>`)
+/// cannot be told apart here: clap records that arm only while building, after
+/// this pass. Those parents carry `#[command(disable_help_flag = true)]` on
+/// the variant, and `test_every_wrapped_tool_subcommand_forwards_help` builds
+/// the command to hold both groups to the same contract.
 fn forward_help_to_wrapped_tools(cmd: clap::Command) -> clap::Command {
-    let forwards = cmd.get_positionals().any(|a| a.is_trailing_var_arg_set());
+    forward_help_below(cmd, 0)
+}
+
+/// `depth` 1 is a direct child of `rtk`: the meta-command names are only
+/// rtk's own there (`rtk run` is, `rtk bun run` is bun's).
+fn forward_help_below(cmd: clap::Command, depth: usize) -> clap::Command {
+    let meta = depth == 1 && core::constants::RTK_META_COMMANDS.contains(&cmd.get_name());
+    let forwards = cmd.get_positionals().any(|a| a.is_trailing_var_arg_set()) && !meta;
     let cmd = if forwards {
         cmd.disable_help_flag(true)
     } else {
         cmd
     };
-    cmd.mut_subcommands(forward_help_to_wrapped_tools)
+    cmd.mut_subcommands(|sub| forward_help_below(sub, depth + 1))
 }
 
 /// The clap command `main` parses with: the derived `Cli` after
@@ -1834,8 +1876,10 @@ fn cli_command() -> clap::Command {
     forward_help_to_wrapped_tools(<Cli as clap::CommandFactory>::command())
 }
 
-/// Parse argv the way `main` does. Tests reach for this rather than
-/// `Cli::try_parse_from` when the help-flag routing matters.
+/// Parse argv the way `main` does. `Cli::try_parse_from` is the derived
+/// parser *before* [`forward_help_to_wrapped_tools`], so a test about
+/// `--help`/`-h` on a wrapped tool must go through this or it tests a parser
+/// `main` never runs.
 fn parse_cli<I, T>(args: I) -> Result<Cli, clap::Error>
 where
     I: IntoIterator<Item = T>,
@@ -3167,9 +3211,48 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_cli_forwards_help_past_an_external_subcommand_parent() {
+        // `rtk git --help`: the parent has no trailing positional, only an
+        // external-subcommand arm. clap must not answer with rtk's stub: the
+        // flag either lands in the external arm or fails the parse, and a
+        // parse error routes `run_fallback` to the raw `git --help`.
+        match parse_cli(["rtk", "git", "--help"]) {
+            Err(e) => assert_ne!(e.kind(), ErrorKind::DisplayHelp),
+            Ok(Cli {
+                command:
+                    Commands::Git {
+                        command: GitCommands::Other(args),
+                        ..
+                    },
+                ..
+            }) => assert_eq!(args, vec![OsString::from("--help")]),
+            Ok(_) => panic!("`--help` parsed as something other than git's external arm"),
+        }
+
+        let cli = parse_cli(["rtk", "git", "bisect", "--help"]).unwrap();
+        match cli.command {
+            Commands::Git {
+                command: GitCommands::Other(args),
+                ..
+            } => assert_eq!(
+                args,
+                vec![OsString::from("bisect"), OsString::from("--help")]
+            ),
+            _ => panic!("expected git's external subcommand arm"),
+        }
+    }
+
+    #[test]
     fn test_parse_cli_keeps_help_on_meta_commands() {
-        // Nothing to forward to: rtk's own help stays.
-        for argv in [vec!["rtk", "--help"], vec!["rtk", "gain", "--help"]] {
+        // Nothing to forward to: rtk's own help stays, including on the meta
+        // commands that take a trailing command of their own.
+        for argv in [
+            vec!["rtk", "--help"],
+            vec!["rtk", "gain", "--help"],
+            vec!["rtk", "proxy", "--help"],
+            vec!["rtk", "run", "--help"],
+            vec!["rtk", "rewrite", "--help"],
+        ] {
             let err = match parse_cli(argv.clone()) {
                 Err(e) => e,
                 Ok(_) => panic!("{argv:?}: help must be clap's"),
@@ -3180,23 +3263,34 @@ mod tests {
 
     #[test]
     fn test_every_wrapped_tool_subcommand_forwards_help() {
-        // Total contract: a subcommand that forwards trailing hyphen args must
-        // not let clap claim `--help`; one that forwards nothing must keep it.
-        fn walk(cmd: &clap::Command, path: &str, seen: &mut usize) {
-            let forwards = cmd.get_positionals().any(|a| a.is_trailing_var_arg_set());
-            if forwards {
+        // Total contract: a subcommand that forwards to a tool (trailing
+        // hyphen args or an external subcommand) must not let clap claim
+        // `--help`; a meta command or one that forwards nothing must keep it.
+        fn walk(cmd: &clap::Command, path: &str, depth: usize, seen: &mut usize) {
+            let forwards = cmd.get_positionals().any(|a| a.is_trailing_var_arg_set())
+                || cmd.is_allow_external_subcommands_set();
+            let meta = depth == 1 && core::constants::RTK_META_COMMANDS.contains(&cmd.get_name());
+            if forwards && !meta {
                 *seen += 1;
                 assert!(
                     cmd.is_disable_help_flag_set(),
                     "{path} forwards args but clap still owns --help"
                 );
+            } else if meta {
+                assert!(
+                    !cmd.is_disable_help_flag_set(),
+                    "{path} is rtk's own; clap must keep --help"
+                );
             }
             for sub in cmd.get_subcommands() {
-                walk(sub, &format!("{path} {}", sub.get_name()), seen);
+                walk(sub, &format!("{path} {}", sub.get_name()), depth + 1, seen);
             }
         }
         let mut seen = 0;
-        walk(&cli_command(), "rtk", &mut seen);
+        // Built, so the external-subcommand arms are visible to the walk.
+        let mut cmd = cli_command();
+        cmd.build();
+        walk(&cmd, "rtk", 0, &mut seen);
         assert!(seen >= 100, "expected the wrapped-tool surface, saw {seen}");
     }
 
@@ -3735,7 +3829,7 @@ mod tests {
     #[test]
     fn test_ctest_help_and_version_passthrough_args() {
         for flag in ["--help", "--version"] {
-            let cli = Cli::try_parse_from(["rtk", "ctest", flag]).unwrap();
+            let cli = parse_cli(["rtk", "ctest", flag]).unwrap();
             match cli.command {
                 Commands::Ctest { args } => assert_eq!(args, vec![flag]),
                 _ => panic!("Expected Ctest command"),
@@ -3926,7 +4020,7 @@ mod tests {
     fn test_rewrite_clap_double_dash_blocks_flag_injection() {
         let injection_inputs = ["--help", "-h", "--version", "-V"];
         for injected in injection_inputs {
-            let result = Cli::try_parse_from(["rtk", "rewrite", "--", injected]);
+            let result = parse_cli(["rtk", "rewrite", "--", injected]);
             assert!(
                 result.is_ok(),
                 "`rtk rewrite -- {injected:?}` must parse without triggering clap"

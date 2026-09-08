@@ -991,6 +991,9 @@ fn run_log(
     let result = exec_capture(&mut cmd).context("Failed to run git log")?;
 
     if !result.success() {
+        // git answers `-h`/`--help` with its usage on stdout and exit 129;
+        // dropping stdout here left that answer blank.
+        print!("{}", result.stdout);
         eprintln!("{}", result.stderr);
         return Ok(result.exit_code);
     }
@@ -1530,6 +1533,8 @@ fn run_status(args: &[String], verbose: u8, global_args: &[String]) -> Result<i3
         let result = exec_capture(&mut cmd).context("Failed to run git status")?;
 
         if !result.success() {
+            // git answers `-h`/`--help` with its usage on stdout and exit 129.
+            print!("{}", result.stdout);
             if !result.stderr.trim().is_empty() {
                 eprint!("{}", result.stderr);
             }

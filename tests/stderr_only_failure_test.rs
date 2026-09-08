@@ -183,3 +183,25 @@ fn lint_issues_are_summarised_and_exit_zero() {
         "exit 1 means issues found, which RTK reports without failing"
     );
 }
+
+/// git answers `-h` with its usage on **stdout** and exit 129. Once `rtk git
+/// log -h` / `rtk git status -h` forward the flag (they used to be clap's), the
+/// filters' failure branches must hand that stdout back, not just stderr.
+#[test]
+fn forwarded_help_keeps_gits_stdout_usage() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fake_tool(
+        dir.path(),
+        "git",
+        "case \"$*\" in *-h*|*--help*) echo \"usage: git $1 [<options>]\"; exit 129;; esac; exit 0",
+    );
+    for sub in ["log", "status"] {
+        let out = rtk_with(dir.path(), &["git", sub, "-h"]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(out.status.code(), Some(129), "git {sub} -h exit");
+        assert!(
+            stdout.contains(&format!("usage: git {sub}")),
+            "git {sub} -h usage must reach stdout, got {stdout:?}"
+        );
+    }
+}
