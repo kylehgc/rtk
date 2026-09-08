@@ -19,7 +19,7 @@ use cmds::jvm::{gradlew_cmd, mvn_cmd};
 use cmds::php::{
     ecs_cmd, paratest_cmd, pest_cmd, php_cmd, phpstan_cmd, phpt_cmd, phpunit_cmd, pint_cmd,
 };
-use cmds::python::{mypy_cmd, pip_cmd, pytest_cmd, ruff_cmd, uv_cmd};
+use cmds::python::{mypy_cmd, pip_cmd, pytest_cmd, ruff_cmd, sqlfluff_cmd, uv_cmd};
 use cmds::ruby::{rake_cmd, rspec_cmd, rubocop_cmd};
 use cmds::rust::{cargo_cmd, runner};
 use cmds::scala::sbt_cmd;
@@ -722,6 +722,13 @@ enum Commands {
     /// Ruff linter/formatter with compact output
     Ruff {
         /// Ruff arguments (e.g., check, format --check)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
+    /// SQLFluff SQL linter with compact output
+    Sqlfluff {
+        /// SQLFluff arguments (e.g., lint models/, fix models/staging/)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -1455,6 +1462,22 @@ fn run_bunx_tool(args: &[String], verbose: u8, skip_env: bool) -> Result<i32> {
         "tsc" | "typescript" => tsc_cmd::run(Some("bunx"), &args[1..], verbose),
         "eslint" => lint_cmd::run(Some("bunx"), args, verbose),
         _ => bun_cmd::run_bunx(args, verbose, skip_env),
+    }
+}
+
+/// `awareness.level` for `rtk init`. A malformed config.toml falls back to `default` with a
+/// warning instead of silently installing the wrong awareness file.
+fn configured_awareness_level() -> core::config::AwarenessLevel {
+    match core::config::Config::load() {
+        Ok(config) => config.awareness.level,
+        Err(e) => {
+            let reason = e.to_string();
+            let first_line = reason.lines().next().unwrap_or("unreadable");
+            eprintln!(
+                "rtk: warning: could not read config.toml ({first_line}); using awareness.level = \"default\""
+            );
+            core::config::AwarenessLevel::default()
+        }
     }
 }
 
@@ -2209,6 +2232,11 @@ fn run_cli() -> Result<i32> {
             let ctx = hooks::init::InitContext {
                 verbose: cli.verbose,
                 dry_run,
+                awareness: if show || uninstall {
+                    core::config::AwarenessLevel::default()
+                } else {
+                    configured_awareness_level()
+                },
             };
             let patch_mode = if auto_patch {
                 hooks::init::PatchMode::Auto
@@ -2603,6 +2631,8 @@ fn run_cli() -> Result<i32> {
         }
 
         Commands::Ruff { args } => ruff_cmd::run(&args, cli.verbose)?,
+
+        Commands::Sqlfluff { args } => sqlfluff_cmd::run(&args, cli.verbose)?,
 
         Commands::Pytest { args } => pytest_cmd::run(&args, cli.verbose)?,
 
@@ -3007,6 +3037,7 @@ fn is_operational_command(cmd: &Commands) -> bool {
             | Commands::Npx { .. }
             | Commands::Curl { .. }
             | Commands::Ruff { .. }
+            | Commands::Sqlfluff { .. }
             | Commands::Pytest { .. }
             | Commands::Php { .. }
             | Commands::Phpunit { .. }
@@ -3256,6 +3287,7 @@ mod tests {
         let ctx = hooks::init::InitContext {
             verbose: 2,
             dry_run: true,
+            ..Default::default()
         };
 
         let result = uninstall_init_dispatch(
@@ -3475,6 +3507,7 @@ mod tests {
             "npx",
             "curl",
             "ruff",
+            "sqlfluff",
             "pytest",
             "mypy",
             "rake",

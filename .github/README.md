@@ -48,7 +48,7 @@ output *larger* and more correct. This fork does not claim to save more tokens t
 upstream — that is upstream's pitch. It claims to not lose your errors.
 
 <!-- FORK_DELTA_START -->
-**61 fixes in this fork that upstream does not have.** Each links to the commit,
+**51 fixes in this fork that upstream does not have.** Each links to the commit,
 where the original author is recorded. Adopted fixes come from community PRs that upstream
 has not merged — see the [adoption issues](https://github.com/kylehgc/rtk/issues?q=is%3Aissue+Adopt+upstream)
 for provenance.
@@ -60,11 +60,12 @@ upstream in another form.
 
 | Fix | Commit |
 |---|---|
+| fix(diff): number both files on a crossed rewrite pairing, and name the cap a refusal hit | [`091e4a5`](https://github.com/kylehgc/rtk/commit/091e4a5) |
+| fix(diff): align by LCS and name the cause of an invisible difference | [`8ca2e0e`](https://github.com/kylehgc/rtk/commit/8ca2e0e) |
 | fix(git): keep the trailing newline on filtered 'git status' output | [`d536891`](https://github.com/kylehgc/rtk/commit/d536891) |
 | fix(runner): drop the failure-only stderr forward superseded by #3772 | [`9ed2e49`](https://github.com/kylehgc/rtk/commit/9ed2e49) |
 | fix(core): forward stderr from stdout-only filters and count it | [`12db983`](https://github.com/kylehgc/rtk/commit/12db983) |
 | fix(git): fall back to raw text when compact_diff gets non-unified input | [`c8e7a8b`](https://github.com/kylehgc/rtk/commit/c8e7a8b) |
-| fix(diff): stop reporting differing files as identical, and align by LCS | [`acbe88c`](https://github.com/kylehgc/rtk/commit/acbe88c) |
 | fix(jest): equals-form --reporters is greedy too; respect -- terminator | [`f0f34af`](https://github.com/kylehgc/rtk/commit/f0f34af) |
 | fix(jest): consume the values of a space-separated --reporters flag | [`b4aceb6`](https://github.com/kylehgc/rtk/commit/b4aceb6) |
 | fix(playwright): consume the value of a space-separated --reporter flag | [`692fb72`](https://github.com/kylehgc/rtk/commit/692fb72) |
@@ -74,17 +75,6 @@ upstream in another form.
 | fix(hooks): require every segment rtk-prefixed before asserting Allow | [`371e058`](https://github.com/kylehgc/rtk/commit/371e058) |
 | fix(hooks): harden already-rtk permission matching (amendments to upstream #3195) | [`8adbeba`](https://github.com/kylehgc/rtk/commit/8adbeba) |
 | fix(hooks): honor permission rules for already-rtk-prefixed commands | [`30557a6`](https://github.com/kylehgc/rtk/commit/30557a6) |
-| fix(diff): preclear round 4 -- gate new sections on a following hunk | [`5939842`](https://github.com/kylehgc/rtk/commit/5939842) |
-| fix(diff): preclear round 3 -- keep the no-newline marker, strict UTF-8 gate | [`fb5a3dc`](https://github.com/kylehgc/rtk/commit/fb5a3dc) |
-| fix(diff): preclear round 2 -- file-level facts, sha256 mbox, contexts | [`25a17c0`](https://github.com/kylehgc/rtk/commit/25a17c0) |
-| fix(diff): preclear round 1 -- report hunkless empty-file sections, tighten guards | [`2219c6d`](https://github.com/kylehgc/rtk/commit/2219c6d) |
-| fix(diff): review round 1 -- byte-raw fallback, strict prefix width, fixture hygiene | [`8243d1a`](https://github.com/kylehgc/rtk/commit/8243d1a) |
-| fix(diff): region parser for condense_unified_diff -- budget-owned hunks, raw fallback | [`5a61595`](https://github.com/kylehgc/rtk/commit/5a61595) |
-| fix(diff): fall back to raw when a hunk budget disagrees with its body | [`1f64783`](https://github.com/kylehgc/rtk/commit/1f64783) |
-| fix(diff): close hunks on the @@ line budget; drop the phantom overflow trailer | [`8e65037`](https://github.com/kylehgc/rtk/commit/8e65037) |
-| fix(diff): end a hunk on any non-body line, not only `diff --git` | [`89cfe86`](https://github.com/kylehgc/rtk/commit/89cfe86) |
-| fix(diff): classify ---/+++ by position, not prefix alone | [`5bcee1c`](https://github.com/kylehgc/rtk/commit/5bcee1c) |
-| fix(diff): cover both flush sites and stop dropping ---/+++ content | [`6375941`](https://github.com/kylehgc/rtk/commit/6375941) |
 | fix(lint): guard known linter names from the on-disk path check, bound failure passthrough | [`3240075`](https://github.com/kylehgc/rtk/commit/3240075) |
 | fix(hook): delegate lint scripts to package managers | [`cae0f21`](https://github.com/kylehgc/rtk/commit/cae0f21) |
 | fix(lint): stop reading a bare path as a linter name | [`617ef8e`](https://github.com/kylehgc/rtk/commit/617ef8e) |
