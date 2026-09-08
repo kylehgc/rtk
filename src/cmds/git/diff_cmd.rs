@@ -227,6 +227,14 @@ fn render_diff(file1: &Path, file2: &Path, comparison: &FileComparison) -> (Stri
         }) => {
             // Neither count opens the line: a leading `-` or `+` would read as
             // a listed line to anything anchoring on the markers.
+            //
+            // "changed in", not "only in": the counts are pre-pairing, so a
+            // rewrite that would have listed as one `~` is one line a side
+            // here. That read as a budget while the figures were large, but a
+            // byte refusal makes them small and concrete — `1 line` against
+            // `1 line` for two 1.1MB minified files differing by a character —
+            // and "only in" then claims a non-membership false in both halves.
+            // "changed" states what is known without pairing them.
             let reason = match over {
                 ListingCap::Count => "too many to list".to_string(),
                 ListingCap::Bytes(bytes) => {
@@ -235,11 +243,11 @@ fn render_diff(file1: &Path, file2: &Path, comparison: &FileComparison) -> (Stri
             };
             return (
                 format!(
-                    "only in {}: {}, only in {}: {}; {}, use `rtk proxy diff` for the full text\n",
-                    file1.display(),
+                    "{} changed in {}, {} changed in {}; {}, use `rtk proxy diff` for the full text\n",
                     count_lines(*removed),
-                    file2.display(),
+                    file1.display(),
                     count_lines(*added),
+                    file2.display(),
                     reason
                 ),
                 1,
@@ -299,11 +307,17 @@ fn format_megabytes(bytes: usize) -> String {
 /// The note explaining which file each marker is numbered in, or `None` when
 /// the output has only one frame and needs no note.
 ///
-/// Every line is numbered in the file it comes from: `-` and `~` in file1, `+`
-/// in file2. The note is owed whenever the output mixes frames, which is any
-/// time a `+` sits beside a `-` or a `~` — an insertion above a modification
-/// shifts the numbering just as much as a replacement pair does. Output drawn
-/// from one file only (`+` alone, `-` alone, `~` alone) has one frame.
+/// Most lines are numbered in the file they come from: `-` and a single-number
+/// `~` in file1, `+` in file2. A crossed hunk's `~ N→M` is the exception — it
+/// carries both — so it is a two-frame marker by itself and is named as its
+/// own clause. Naming it separately also keeps the two `~` shapes apart when
+/// both are on screen, which nothing else in the listing does.
+///
+/// The note is owed whenever the output mixes frames: a `+` beside a `-` or a
+/// single-numbered `~`, or any crossed `~` at all. Keying the second half on
+/// `added` alone left a deletions-plus-crossing render bare, mixing two frames
+/// unannounced. Output drawn from one file only (`+` alone, `-` alone, plain
+/// `~` alone) has one frame.
 ///
 /// It names the markers actually on screen rather than a fixed `-` and `+`.
 /// The note exists solely to stop a line-number misread, so one that describes
@@ -320,20 +334,35 @@ fn format_megabytes(bytes: usize) -> String {
 /// position, so there is one frame there and the note would misdescribe it as
 /// two.
 fn frame_legend(diff: &DiffResult) -> Option<String> {
-    if diff.positional || diff.added == 0 || (diff.removed == 0 && diff.modified == 0) {
+    if diff.positional {
         return None;
     }
+    let crossed = diff.crossed_modified();
+    let mut clauses = Vec::new();
+
     let mut file1_markers = Vec::new();
     if diff.removed > 0 {
         file1_markers.push("-");
     }
-    if diff.modified > 0 {
+    if diff.modified > crossed {
         file1_markers.push("~");
     }
-    Some(format!(
-        "   ({} = file 1; + = file 2)\n",
-        file1_markers.join(",")
-    ))
+    if !file1_markers.is_empty() {
+        clauses.push(format!("{} = file 1", file1_markers.join(",")));
+    }
+    if diff.added > 0 {
+        clauses.push("+ = file 2".to_string());
+    }
+    if crossed > 0 {
+        clauses.push("~ N→M spans both files".to_string());
+    }
+
+    // A crossed `~` mixes frames on its own; anything else needs a second
+    // clause beside it before there is a misread to prevent.
+    if crossed == 0 && clauses.len() < 2 {
+        return None;
+    }
+    Some(format!("   ({})\n", clauses.join("; ")))
 }
 
 /// 1-based numbers of the lines that `content` terminates with CRLF.
@@ -619,6 +648,16 @@ impl DiffResult {
     #[cfg(test)]
     fn changes(&self) -> Vec<DiffChange<'_>> {
         self.hunks.iter().flat_map(Hunk::changes).collect()
+    }
+
+    /// How many of `modified` render as `~ N→M` rather than as a single
+    /// file1 number, i.e. sit in a hunk whose pairing crosses.
+    fn crossed_modified(&self) -> usize {
+        self.hunks
+            .iter()
+            .filter(|h| h.pairs_cross())
+            .map(|h| h.pairs.len())
+            .sum()
     }
 
     /// Counts derived from the hunks: a pair is one rewritten line, and every
@@ -2790,6 +2829,11 @@ mod tests {
 
     /// Compare two file contents and render the result, which is the path
     /// `run` takes minus the guard and the tracking.
+    ///
+    /// The level to assert render *shape* at — markers, legends, frames —
+    /// because the legend is composed here and not in `format_diff_changes`.
+    /// Assert at `format_diff_changes` only for the change list itself, and at
+    /// `select_file_diff_output` only when the claim is about `never_worse`.
     fn render_file_diff(
         file1: &Path,
         file2: &Path,
@@ -3832,7 +3876,7 @@ mod tests {
 
         assert_eq!(code, 1);
         assert!(
-            out.contains("only in a.txt: 0 lines, only in b.txt: 59999 lines"),
+            out.contains("0 lines changed in a.txt, 59999 lines changed in b.txt"),
             "got:\n{}",
             out
         );
@@ -4311,7 +4355,12 @@ mod tests {
             &format!("ctx\n{}\n{}\nend\n", inserted, rewritten),
         );
         assert_eq!((diff.added, diff.removed, diff.modified), (1, 0, 1));
-        let listed = format_diff_changes(&diff);
+        let (listed, _) = render_file_diff(
+            Path::new("a.txt"),
+            Path::new("b.txt"),
+            &format!("ctx\n{}\nend\n", old),
+            &format!("ctx\n{}\n{}\nend\n", inserted, rewritten),
+        );
         assert!(
             listed.contains(&format!("~   2 {} → {}", old, rewritten)),
             "got:\n{}",
@@ -6934,20 +6983,88 @@ diff --git a/b.rs b/b.rs
         // and put `timeout = 60` on line 2 of file2, where `retries = 5` is.
         let content1 = "server:\ntimeout = 30\nretries = 3\nhost = \"x\"\n";
         let content2 = "server:\nretries = 5\ntimeout = 60\nhost = \"x\"\n";
-        let diff = changes_of(content1, content2);
-        assert_eq!(diff.modified, 2, "both lines pair as rewrites");
+        assert_eq!(changes_of(content1, content2).modified, 2, "both pair");
+        // Asserted through the render, not `format_diff_changes`: the legend
+        // that has to describe `~ N→M` is composed a level up, and a test that
+        // stops below it lets the two disagree.
+        let (out, _) = render_file_diff(Path::new("a.txt"), Path::new("b.txt"), content1, content2);
         assert_eq!(
-            format_diff_changes(&diff),
-            "~   2→3 timeout = 30 → timeout = 60\n~   3→2 retries = 3 → retries = 5\n"
+            out,
+            "   (~ N→M spans both files)\n\
+             ~   2→3 timeout = 30 → timeout = 60\n\
+             ~   3→2 retries = 3 → retries = 5\n"
         );
 
         // A shift alone is inferable from order, so a rewrite after an
-        // insertion keeps the single file1 number.
-        let shifted = changes_of("a\nb\nlet x = 1;\n", "NEW\na\nb\nlet x = 2;\n");
-        assert_eq!(
-            format_diff_changes(&shifted),
-            "+   1 NEW\n~   3 let x = 1; → let x = 2;\n"
+        // insertion keeps the single file1 number — and the legend keeps the
+        // single-frame `~` wording that goes with it.
+        let (shifted, _) = render_file_diff(
+            Path::new("a.txt"),
+            Path::new("b.txt"),
+            "a\nb\nlet x = 1;\n",
+            "NEW\na\nb\nlet x = 2;\n",
         );
+        assert_eq!(
+            shifted,
+            "   (~ = file 1; + = file 2)\n+   1 NEW\n~   3 let x = 1; → let x = 2;\n"
+        );
+    }
+
+    #[test]
+    fn test_render_frame_legend_names_the_crossed_shape() {
+        // A crossed `~` carries file1→file2, so a legend calling `~` file 1 is
+        // false about the line the reader is looking at, and gating the note on
+        // a `+` being present dropped it entirely from a deletions-plus-
+        // crossing render — two frames, unannounced.
+        let (deletions, _) = render_file_diff(
+            Path::new("a.txt"),
+            Path::new("b.txt"),
+            "a\nkey_1 = 1\nkey_2 = 2\nkey_3 = 3\ntimeout = 30\nretries = 3\nz\n",
+            "a\nretries = 5\ntimeout = 60\nz\n",
+        );
+        assert!(
+            deletions.contains("   (- = file 1; ~ N→M spans both files)\n"),
+            "a crossing owes the note with no `+` on screen, got:\n{}",
+            deletions
+        );
+        assert!(
+            !deletions.contains("~ = file 1"),
+            "no plain `~` on screen to describe, got:\n{}",
+            deletions
+        );
+
+        let (insertions, _) = render_file_diff(
+            Path::new("a.txt"),
+            Path::new("b.txt"),
+            "a\ntimeout = 30\nretries = 3\nz\n",
+            "a\nINS1\nINS2\nretries = 5\ntimeout = 60\nz\n",
+        );
+        assert!(
+            insertions.contains("   (+ = file 2; ~ N→M spans both files)\n"),
+            "got:\n{}",
+            insertions
+        );
+    }
+
+    #[test]
+    fn test_render_frame_legend_separates_the_two_modified_shapes() {
+        // One listing can carry `~ N→M` beside a plain `~ N`, with nothing in
+        // the markers telling them apart. The legend names both forms so a
+        // reader — or anything anchoring on `^~\s*(\d+)\s` — is told the
+        // shape changes partway down.
+        let (out, _) = render_file_diff(
+            Path::new("a.txt"),
+            Path::new("b.txt"),
+            "head\ntimeout = 30\nretries = 3\nmid\nvalue = alpha\ntail\n",
+            "head\nretries = 5\ntimeout = 60\nmid\nvalue = beta\ntail\n",
+        );
+        assert!(
+            out.contains("   (~ = file 1; ~ N→M spans both files)\n"),
+            "both `~` shapes are on screen, got:\n{}",
+            out
+        );
+        assert!(out.contains("~   2→3 "), "got:\n{}", out);
+        assert!(out.contains("~   5 "), "got:\n{}", out);
     }
 
     /// Rebuild file2 from a condensed listing the way a reader would: `+` and
@@ -7053,9 +7170,11 @@ diff --git a/b.rs b/b.rs
         let (out, code) =
             render_file_diff(Path::new("a.txt"), Path::new("b.txt"), &content1, &content2);
         assert_eq!(code, 1);
+        // "1 line changed in a.txt", not "only in a.txt: 1 line": the counts
+        // are pre-pairing, and these two lines are 99.99991% identical.
         assert_eq!(
             out,
-            "only in a.txt: 1 line, only in b.txt: 1 line; 2.2MB of text, too large to list, use `rtk proxy diff` for the full text\n"
+            "1 line changed in a.txt, 1 line changed in b.txt; 2.2MB of text, too large to list, use `rtk proxy diff` for the full text\n"
         );
 
         // The one-sided path reaches the same budget through `DifferingLines`.
@@ -7068,3 +7187,4 @@ diff --git a/b.rs b/b.rs
         );
     }
 }
+
