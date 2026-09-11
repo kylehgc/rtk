@@ -438,37 +438,12 @@ pub(crate) fn normalize_for_matching(segment: &str) -> &str {
 /// wrapped one, so deny/ask rules are matched against the stripped form —
 /// best-effort only: matching is token-literal, and quoted or string-form
 /// arguments (`rtk run -c "rm -rf /"`, `rtk proxy "rm" -rf /`) may not
-/// match. That is why wrapped invocations are also excluded from the
-/// hook's assert gates via [`is_wrapped_invocation`]: over-firing a deny
-/// is fail-safe, asserting an allow for text RTK cannot decompose is not.
+/// match. Over-firing a deny is fail-safe, so best-effort is enough here.
 /// This list is exhaustive over `main.rs`'s top-level `Commands` enum:
 /// every other variant either proxies the tool it is named after
 /// (`rtk grep …` IS `grep …`) or never executes its argument
 /// (`rtk rewrite`, `rtk hook check`).
 const COMMAND_WRAPPERS: [&str; 5] = ["proxy", "run", "err", "test", "summary"];
-
-/// True when `segment` reaches its executed command through one of
-/// [`COMMAND_WRAPPERS`]. Such segments are matched best-effort for
-/// deny/ask rules but must never be allow-asserted via the hook's
-/// already-rtk (no-rewrite) arm: the wrapper's argument is arbitrary
-/// text RTK cannot fully attest. (Ask and deny asserts are not excluded
-/// — they can only ever produce a prompt or a block, so over-firing is
-/// fail-safe.)
-pub(crate) fn is_wrapped_invocation(segment: &str) -> bool {
-    let mut s = segment;
-    loop {
-        let Some(after_rtk) = strip_token(s, "rtk") else {
-            return false;
-        };
-        if COMMAND_WRAPPERS
-            .iter()
-            .any(|wrapper| strip_token(after_rtk, wrapper).is_some())
-        {
-            return true;
-        }
-        s = after_rtk;
-    }
-}
 
 /// Strips `token` from the start of `s` when it is followed by at least
 /// one ASCII IFS whitespace character (space, tab, CR, LF) and more text;
@@ -488,9 +463,8 @@ fn strip_token<'a>(s: &'a str, token: &str) -> Option<&'a str> {
 
 /// True when `segment` is an `rtk …` invocation or bare `rtk` — i.e. text
 /// a host's native permission matcher would not recognize as the
-/// underlying tool. Single predicate behind BOTH hook gates — the
-/// any-segment deny gate and the all-segments allow gate (see the
-/// quantifier note above `hook_cmd::contains_already_rtk_segment`).
+/// underlying tool. Predicate behind the hook's any-segment deny gate
+/// (`hook_cmd::contains_already_rtk_segment`).
 pub(crate) fn is_rtk_prefixed(segment: &str) -> bool {
     segment == "rtk" || normalize_for_matching(segment).len() != segment.len()
 }
@@ -1434,19 +1408,6 @@ mod tests {
         assert_eq!(normalize_for_matching("proxy rm -rf /"), "proxy rm -rf /");
         assert_eq!(normalize_for_matching("rtk proxyfoo bar"), "proxyfoo bar");
         assert_eq!(normalize_for_matching("rtk proxy"), "proxy");
-    }
-
-    #[test]
-    fn test_is_wrapped_invocation_contract() {
-        assert!(is_wrapped_invocation("rtk proxy rm -rf /"));
-        assert!(is_wrapped_invocation("rtk run -c \"rm -rf /\""));
-        assert!(is_wrapped_invocation("rtk rtk proxy rm"));
-        assert!(is_wrapped_invocation("rtk err cargo build"));
-        assert!(!is_wrapped_invocation("rtk grep foo"));
-        assert!(!is_wrapped_invocation("proxy rm -rf /"));
-        assert!(!is_wrapped_invocation("rtk proxy"));
-        assert!(!is_wrapped_invocation("rm -rf /"));
-        assert!(!is_wrapped_invocation("rtk proxyfoo bar"));
     }
 
     #[test]

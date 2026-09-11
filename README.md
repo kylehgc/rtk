@@ -74,6 +74,14 @@ The token counts RTK reports are estimated as `bytes / 4` — RTK ships no token
 brew install rtk
 ```
 
+### winget (Windows)
+
+Easiest way to install on Windows — one command, no PATH setup needed:
+
+```powershell
+winget install rtk-ai.rtk
+```
+
 ### Quick Install (Linux/macOS)
 
 ```bash
@@ -254,7 +262,7 @@ rtk aws logs get-log-events     # Timestamped messages only
 rtk aws cloudformation describe-stack-events  # Failures first
 rtk aws dynamodb scan           # Unwraps type annotations
 rtk aws iam list-roles          # Strips policy documents
-rtk aws s3 ls                   # Truncated with tee recovery
+rtk aws s3 ls                   # Truncated with recall recovery
 ```
 
 ### Containers
@@ -368,7 +376,9 @@ By default `RTK.md` says nothing about RTK itself. Set `[awareness] level = "hig
 
 RTK works fully on native Windows. Since **v0.37.2** the auto-rewrite hook runs as a **native binary command** (`rtk hook claude`) — no Unix shell, bash, or jq required — so commands are rewritten transparently on Command Prompt, PowerShell, and Windows Terminal, just like on Linux and macOS.
 
-### Native Windows
+### Native Windows (manual install)
+
+Prefer [`winget`](#winget-windows) if you can — it handles PATH for you.
 
 ```powershell
 # 1. Download and extract rtk-x86_64-pc-windows-msvc.zip from releases
@@ -435,17 +445,18 @@ For per-agent setup details, override controls, and graceful degradation, see th
 [hooks]
 exclude_commands = ["curl", "playwright"]  # skip rewrite for these (matches `npx playwright` too)
 
-[tee]
-enabled = true          # save raw output on failure (default: true)
-mode = "failures"       # "failures", "always", or "never"
+[retriever]
+mode = "sqlite"         # sqlite (default) | tee (legacy files) | disabled
 ```
 
-When a command fails, RTK saves the full unfiltered output so the LLM can read it without re-executing:
+When a command fails, RTK saves the full unfiltered output so the LLM can recall it without re-executing:
 
 ```
 FAILED: 2/15 tests
-[full output: ~/.local/share/rtk/tee/1707753600_cargo_test.log]
+[full output: rtk recall 3f9c2a81d4e7]
 ```
+
+Legacy `[tee]` config sections are still honored: they map to `mode = "tee"` (file-based recovery on failure/truncation), or `mode = "disabled"` if you had `enabled = false`. The former `mode = "always"` keeps its behaviour and maps to `tee_on_success = true`, which archives successful runs too. The sqlite store stays failure/truncation-driven.
 
 For the full config reference (all sections, env vars, per-project filters), see the [Configuration guide](https://www.rtk-ai.app/guide/getting-started/configuration).
 

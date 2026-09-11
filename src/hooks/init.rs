@@ -486,6 +486,17 @@ pub fn run(
         println!();
     }
 
+    if crate::core::tee_file::legacy_tee_migration_pending() {
+        println!("{}", crate::core::tee_file::LEGACY_TEE_NOTICE);
+        println!();
+    } else if crate::core::tee_file::legacy_tee_config_in_use() {
+        println!("{}", crate::core::tee_file::LEGACY_TEE_CONFIG_NOTICE);
+        println!();
+    } else if crate::core::tee_file::legacy_tee_fields_merged_in_use() {
+        println!("{}", crate::core::tee_file::LEGACY_TEE_MERGED_NOTICE);
+        println!();
+    }
+
     Ok(())
 }
 
