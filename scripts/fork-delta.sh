@@ -61,6 +61,8 @@ HEALED_SHAS=(
   6375941 # 2026-09-07 pre-region-parser hunk fix, subsumed by the region parser upstream merged as ee614e4 (PR #3788)
   acbe88c # 2026-09-07 snapshot ecef036 of upstream PR #3268, superseded by the re-adoption of its head (8ca2e0e, 091e4a5); count it once
   8ca2e0e # 2026-09-07 upstream merged PR #3268 (9512e1a); this is its d4239ec with an adjacency resolution, so the patch-id differs. 091e4a5 heals by patch-id (claudedocs/sync-conflict-2026-09-07-b.md)
+  371e058 # 2026-09-11 the Allow-assert arm it gated is gone: upstream d6ce8f7 decision::suppress_identity defers identity rewrites; its ASCII-IFS whitespace rule survives in strip_token, 505e355 (claudedocs/sync-conflict-2026-09-11.md)
+  31fceff # 2026-09-11 Ask-assert arm and no-op renderer guards superseded by upstream d6ce8f7 decision::suppress_identity (claudedocs/sync-conflict-2026-09-11.md)
 )
 
 # ponytail: patch-id scan bounded to upstream commits since UPSTREAM_SINCE.
