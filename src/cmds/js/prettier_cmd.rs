@@ -1,6 +1,7 @@
 //! Filters Prettier output to show only files that need formatting.
 
 use crate::core::runner::{self, RunOptions};
+use crate::core::shell::display_args;
 use crate::core::truncate::CAP_WARNINGS;
 use crate::core::utils::{package_manager_exec, strip_ansi};
 use anyhow::Result;
@@ -22,7 +23,7 @@ pub fn run(args: &[String], verbose: u8) -> Result<i32> {
     runner::run_filtered_with_exit(
         cmd,
         "prettier",
-        &args.join(" "),
+        &display_args(args),
         filter_prettier_output_with_exit,
         RunOptions::default(),
     )
@@ -86,12 +87,11 @@ pub(crate) fn filter_prettier_output_with_exit(output: &str, exit_code: i32) -> 
         }
 
         // Count total files checked
-        if trimmed.contains("All matched files use Prettier") {
-            if let Some(count_str) = trimmed.split_whitespace().next() {
-                if let Ok(count) = count_str.parse::<usize>() {
-                    files_checked = count;
-                }
-            }
+        if trimmed.contains("All matched files use Prettier")
+            && let Some(count_str) = trimmed.split_whitespace().next()
+            && let Ok(count) = count_str.parse::<usize>()
+        {
+            files_checked = count;
         }
     }
 
@@ -311,7 +311,11 @@ Code style issues found in the above file(s). Forgot to run Prettier?
                       [\u{1b}[33mwarn\u{1b}[39m] bad.js\n\
                       [\u{1b}[33mwarn\u{1b}[39m] Code style issues found in the above file. Run Prettier with --write to fix.";
         let result = filter_prettier_output_with_exit(output, 1);
-        assert!(result.contains("1 files need formatting"), "got: {}", result);
+        assert!(
+            result.contains("1 files need formatting"),
+            "got: {}",
+            result
+        );
         assert!(result.contains("bad.js"));
         assert!(!result.contains("All files formatted correctly"));
     }

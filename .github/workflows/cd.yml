@@ -71,7 +71,7 @@ jobs:
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -175,7 +175,7 @@ jobs:
       # Forks have no App installed. Fall back to GITHUB_TOKEN — note that a release
       # PR it opens will carry no checks, since GITHUB_TOKEN actions do not trigger
       # workflows. Review it by hand; the commits in it were already gated by CI.
-      - uses: actions/create-github-app-token@v3
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token
         continue-on-error: true
         with:
@@ -183,7 +183,7 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           permission-contents: write
           permission-pull-requests: write
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
         id: release
         with:
           release-type: rust
@@ -208,7 +208,7 @@ jobs:
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/create-github-app-token@v3
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token
         continue-on-error: true   # forks have no App; GITHUB_TOKEN below suffices
         with:
@@ -216,7 +216,7 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           permission-contents: write
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}

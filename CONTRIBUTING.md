@@ -189,6 +189,13 @@ git pull origin develop
 git checkout -b feat/scope-your-clear-description
 ```
 
+Opt in once per clone so `git blame` skips the bulk-formatting commits listed in
+`.git-blame-ignore-revs` and reports whoever actually wrote each line:
+
+```bash
+git config blame.ignoreRevsFile .git-blame-ignore-revs
+```
+
 ### 2. Make Your Changes
 
 **Respect the existing folder structure.** Place new files where similar files already live. Do not reorganize without prior discussion.
@@ -242,7 +249,7 @@ your branch --> develop (review + CI + integration testing) --> version branch -
 
 Every change **must** include tests. We follow **TDD (Red-Green-Refactor)**: write a failing test first, implement the minimum to pass, then refactor.
 
-For how to write tests (fixtures, snapshots, token savings verification), see [docs/contributing/TECHNICAL.md — Testing](docs/contributing/TECHNICAL.md#testing).
+For how to write tests (fixtures, snapshots, token savings verification), see [docs/contributing/TECHNICAL.md — Testing](docs/contributing/TECHNICAL.md#8-testing).
 
 ### Test Types
 

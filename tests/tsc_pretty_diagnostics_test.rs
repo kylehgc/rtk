@@ -16,7 +16,9 @@
 //! output, added in 842ffeb) through the binary end to end.
 
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+
+mod common;
 
 const FIXTURE: &str = include_str!("fixtures/tsc_pretty_errors_raw.txt");
 
@@ -30,7 +32,7 @@ fn estimate_tokens(text: &str) -> usize {
 
 #[test]
 fn tsc_pipe_filter_compresses_real_pretty_diagnostics() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rtk"))
+    let mut child = common::rtk_command()
         .args(["pipe", "--filter", "tsc"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

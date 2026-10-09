@@ -1,5 +1,6 @@
 //! Filters Playwright E2E test output to show only failures.
 
+use crate::core::shell::{display_args, with_args};
 use crate::core::stream::exec_capture;
 use crate::core::tracking;
 use crate::core::utils::{detect_package_manager, resolved_command, strip_ansi};
@@ -9,9 +10,9 @@ use serde::Deserialize;
 use std::sync::LazyLock;
 
 use crate::parser::{
+    FormatMode, OutputParser, ParseResult, TestFailure, TestResult, TokenFormatter,
     emit_degradation_warning, emit_passthrough_warning, passthrough_warning_reason,
-    truncate_passthrough, FormatMode, OutputParser, ParseResult, TestFailure, TestResult,
-    TokenFormatter,
+    truncate_passthrough,
 };
 
 /// Matches real Playwright JSON reporter output (suites → specs → tests → results)
@@ -309,22 +310,13 @@ pub fn run(args: &[String], verbose: u8) -> Result<i32> {
 
     let raw = result.combined();
 
-    let filtered = format_playwright_output(
-        &result.stdout,
-        &raw,
-        result.exit_code,
-        verbose,
-    );
+    let filtered = format_playwright_output(&result.stdout, &raw, result.exit_code, verbose);
 
     let hint = crate::core::tee::tee_and_hint(&raw, "playwright", result.exit_code);
     let shown = crate::core::runner::emit_guarded(&filtered, hint.as_deref(), &raw);
 
-    timer.track(
-        &format!("playwright {}", args.join(" ")),
-        &format!("rtk playwright {}", args.join(" ")),
-        &raw,
-        &shown,
-    );
+    let tracked = with_args("playwright", &display_args(args));
+    timer.track(&tracked, &format!("rtk {tracked}"), &raw, &shown);
 
     // Preserve exit code for CI/CD
     if !result.success() {

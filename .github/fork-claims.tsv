@@ -15,11 +15,8 @@ non_utf8_pattern_does_not_abort	fidelity	Upstream aborts (SIGABRT, exit 134) on 
 non_utf8_pattern_forwards_original_bytes	fidelity	The wrapped tool receives the exact bytes the user typed, not a lossy copy.
 non_utf8_arg_to_missing_command_exits_cleanly	fidelity	A non-UTF-8 argument to a command that does not exist exits cleanly instead of aborting.
 pnpm_install_failure_preserves_stdout_error_output	fidelity	Upstream discards the error output of a failed `pnpm install`; the fork preserves it.
-failing_tool_stderr_reaches_the_user	fidelity	Upstream swallows a failing tool's stderr under stdout-only filtering; the fork surfaces it.
 claude_hook_rewrites_current_input_key_shape	fidelity	Upstream's Claude hook only reads the legacy `tool_input` key and silently ignores the current `input`-shaped PreToolUse payload; the fork rewrites it and preserves sibling fields.
 claude_hook_emits_ask_decision_for_default_verdict	fidelity	Upstream's Claude hook omits `permissionDecision` for an unconfigured (Default-verdict) rewrite, relying on an absent key; the fork explicitly emits `"ask"`.
-rg_short_r_cluster_does_not_trigger_ripgrep_replace	fidelity	Upstream forwards `-r`/`-R` to ripgrep unchanged, so grep muscle memory (`rg -rn`) is silently read as `--replace` and every match is rewritten to garbage; the fork strips it before rg runs.
-rg_dash_prefixed_flag_value_survives_r_strip	fidelity	Upstream's `-r`/`-R` ambiguity corrupts matches the same way even when a value token (e.g. a `--glob` value) happens to start with `-r`; the fork strips only the real flag and leaves the value intact.
 cargo_test_preserves_compiler_warnings_on_passing_run	fidelity	Upstream drops every compiler warning on a passing `cargo test` run; the fork preserves the full warning detail and annotates the summary with a compiler-warning count.
 piped_cargo_test_filter_does_not_restate_captured_warnings	reduction	Measures: on `cargo test` output with a warning but no test-result line, the fork's raw-tail fallback excludes lines its captured-warnings section already printed — the warning's detail line appears exactly once (not restated) and the filtered output is smaller than raw cargo output; upstream has no captured-warnings section to protect.
 
@@ -34,3 +31,12 @@ piped_cargo_test_filter_does_not_restate_captured_warnings	reduction	Measures: o
 #   tsc_pipe_filter_compresses_real_pretty_diagnostics  (upstream tsc_cmd.rs byte-identical)
 #   git_log_patch_preserves_diff_hunks                  (upstream ca89767 requests_raw_log_output)
 #   git_log_stat_keeps_every_commit                     (upstream ca89767 requests_raw_log_output)
+#
+# Healed 2026-10-09 (sync 2026-10-09, claudedocs/sync-conflict-2026-10-09.md):
+#   failing_tool_stderr_reaches_the_user  (upstream merged PR #3772: runner forwards stdout-only
+#                                          filters' stderr, whole on failure; kept as a regression guard)
+# Withdrawn 2026-10-09, with the code they proved: upstream PR #3681's arg_tokenizer parses rg's
+#   `-r` as the `--replace` it is and forwards it faithfully, which upstream chose over stripping
+#   (it closed #3162 for #3681). The fork's strip and tests/rg_replace_fidelity_test.rs are gone.
+#   rg_short_r_cluster_does_not_trigger_ripgrep_replace
+#   rg_dash_prefixed_flag_value_survives_r_strip

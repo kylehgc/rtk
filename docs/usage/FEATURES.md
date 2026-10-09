@@ -130,7 +130,9 @@ rtk read - [options]          # Lecture depuis stdin
 | Option | Court | Defaut | Description |
 |--------|-------|--------|-------------|
 | `--level` | `-l` | `minimal` | Niveau de filtrage : `none`, `minimal`, `aggressive` |
-| `--max-lines` | `-m` | illimite | Nombre maximum de lignes |
+| `--max-lines` | `-m` | illimite | Apercu structurel plafonne a N lignes (signatures et imports, pas les N premieres) |
+| `--head-lines` | | illimite | Garde seulement les N premieres lignes, a l'octet pres |
+| `--tail-lines` | | illimite | Garde seulement les N dernieres lignes, a l'octet pres |
 | `--line-numbers` | `-n` | non | Afficher les numeros de ligne |
 
 **Niveaux de filtrage :**
@@ -238,6 +240,23 @@ src/ls.rs:25:fn run_tree(...)                src/ls.rs
 
 ---
 
+### `rtk ast-grep` -- Recherche structurelle (AST)
+
+**Objectif :** Remplace `ast-grep` avec une sortie groupee par fichier, plafonnee.
+
+**Syntaxe :**
+```bash
+rtk ast-grep run -p '<pattern>' [chemin] [options]
+```
+
+Regroupe les correspondances par fichier, plafonnees a 5 par fichier et 50 au total ; le surplus est remplace par une note de comptage ("N more match line(s) in X" / "N more match line(s) in M more file(s) not shown"), suivie d'un indice `[full output: ...]` qui pointe vers la sortie complete, des lors que la recuperation est active (`[retriever] mode`) et que la compaction gagne de quoi payer l'indice. Sinon la note de comptage est suivie d'un repli (`--json`, motif plus etroit, ou `rtk proxy ast-grep`) : la sortie complete n'est alors pas archivee. Et quand la sortie compactee finit par couter plus que la brute -- des notes de comptage qui coutent plus que les lignes qu'elles remplacent, ou un indice ou un repli plus long que la marge gagnee -- c'est la sortie brute qui est imprimee entiere, sans note ni repli. ast-grep imprime une ligne par ligne source d'une correspondance, et une correspondance structurelle s'etend sur plusieurs lignes : le decompte porte donc sur les lignes, pas sur les correspondances. Sur une recherche reelle dans ce depot, ~85% de reduction.
+
+Seul `run` est filtre : soit nomme explicitement, soit implicite quand aucun positionnel avant `--` ne porte le nom d'une autre sous-commande. `scan`, `test`, `new`, `lsp`, `outline`, `completions` et `help` passent tels quels (les sous-commandes d'ast-grep 0.45.3 autres que `run`) : leur sortie n'a pas cette forme, et `lsp` dialogue sur stdin. `run --stdin` et `run -i` aussi : le premier lit la source sur le tube que la capture ferme, le second ouvre une session plein ecran (une question par correspondance) qu'il ecrit sur stdout tout en lisant les reponses sur /dev/tty : la capture avalerait la session entiere, question comprise, pendant qu'ast-grep attend une reponse.
+
+`--json` n'est pas filtre -- une demande explicite de sortie structuree passe telle quelle, sans compression.
+
+---
+
 ### `rtk diff` -- Diff condense
 
 **Objectif :** Diff ultra-condense entre deux fichiers (uniquement les lignes modifiees).
@@ -245,8 +264,12 @@ src/ls.rs:25:fn run_tree(...)                src/ls.rs
 **Syntaxe :**
 ```bash
 rtk diff <fichier1> <fichier2>
-rtk diff <fichier1>              # Stdin comme second fichier
+rtk diff -                       # Condense un diff unifie lu sur stdin
 ```
+
+Pour comparer deux fichiers : code de sortie **0** si identiques, **1** si differents,
+**2** si un fichier ne peut pas etre lu. Les fichiers non UTF-8 sont compares octet
+par octet ; seuls leurs noms sont affiches lorsqu'ils different.
 
 ---
 
@@ -422,11 +445,13 @@ Affiche le resume du commit + stat + diff compact.
 
 > **Attention (redirection vers un fichier).** Pour un blob volumineux
 > (`rtk git show HEAD:gros-fichier`), la sortie est fenetree : seul un apercu
-> est affiche, suivi d'un indice `[see remaining: git show 'HEAD:...' | tail -n +N]`.
+> est affiche, suivi d'un indice
+> `[see remaining: rtk proxy git show 'HEAD:...' | tail -n +N]`.
 > Un `rtk git show HEAD:x > fichier` ecrit a la main peut donc tronquer
 > silencieusement le contenu (le code de sortie reste 0). Pour capturer le
-> fichier complet, utilisez `git show` directement, ou suivez l'indice de
-> recuperation.
+> fichier complet, suivez l'indice de recuperation, ou passez par
+> `rtk proxy git show`. Un `git show` nu ne suffit pas quand le hook RTK est
+> actif : il est reecrit en `rtk git show`, qui fenetre a nouveau la sortie.
 
 ---
 
@@ -569,8 +594,12 @@ Showing 10 of 15 pull requests in org/repo   #42 feat: add vitest (open, 2d)
 **Syntaxe :**
 ```bash
 rtk test <commande...>
+rtk test --shell fish '<commande fish>'
 ```
 
+Par défaut, la commande et ses arguments sont exécutés directement, sans
+expansion par un shell. `--shell` accepte une commande complète comme argument
+unique lorsque la syntaxe d'un shell est nécessaire.
 **Exemple :**
 ```bash
 rtk test cargo test
@@ -598,8 +627,11 @@ test utils::test_edge_case ... FAILED
 **Syntaxe :**
 ```bash
 rtk err <commande...>
+rtk err --shell fish '<commande fish>'
 ```
 
+Sans `--shell`, les limites des arguments sont préservées et les jokers,
+variables et opérateurs ne sont pas interprétés par un shell.
 **Exemple :**
 ```bash
 rtk err npm run build
@@ -1011,9 +1043,12 @@ Supprime les barres de progression et le bruit.
 
 ```bash
 rtk summary <commande...>
+rtk summary --shell fish '<commande fish>'
 ```
 
 Utile pour les commandes longues dont la sortie n'a pas de filtre dedie.
+La commande est exécutée directement par défaut ; `--shell` active
+explicitement l'interprétation d'une commande complète par le shell choisi.
 
 ---
 
@@ -1276,6 +1311,7 @@ rtk verify
 | `cargo test/build/clippy/check` | `rtk cargo ...` |
 | `cat/head/tail <fichier>` | `rtk read <fichier>` |
 | `rg/grep <pattern>` | `rtk grep <pattern>` |
+| `ast-grep run -p <pattern>` | `rtk ast-grep run -p <pattern>` |
 | `ls` | `rtk ls` |
 | `tree` | `rtk tree` |
 | `wc` | `rtk wc` |
@@ -1448,7 +1484,7 @@ Octets de sortie bash supprimes (voir [A propos de la reduction de sortie bash](
 
 | Categorie | Commandes | Reduction sortie bash |
 |-----------|-----------|-------------------|
-| **Fichiers** | ls, tree, read, find, grep, diff | 60-80% |
+| **Fichiers** | ls, tree, read, find, grep, ast-grep, diff | 60-85% |
 | **Git** | status, log, diff, show, add, commit, push, pull | 75-92% |
 | **GitHub** | pr, issue, run, api | 79-87% |
 | **Tests** | cargo test, vitest, playwright, pytest, go test | 90-99% |

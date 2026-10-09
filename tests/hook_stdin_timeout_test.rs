@@ -1,11 +1,13 @@
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::thread;
 use std::time::{Duration, Instant};
 
+mod common;
+
 #[test]
 fn claude_hook_rewrites_payload_arriving_on_stdin() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rtk"))
+    let mut child = common::rtk_command()
         .args(["hook", "claude"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -39,7 +41,7 @@ fn claude_hook_rewrites_payload_arriving_on_stdin() {
 
 #[test]
 fn claude_hook_fails_open_when_stdin_stays_open_without_payload() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rtk"))
+    let mut child = common::rtk_command()
         .args(["hook", "claude"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -80,7 +82,7 @@ fn claude_hook_fails_open_when_stdin_stays_open_without_payload() {
 
 #[test]
 fn gemini_hook_fails_open_when_stdin_stays_open_without_payload() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rtk"))
+    let mut child = common::rtk_command()
         .args(["hook", "gemini"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

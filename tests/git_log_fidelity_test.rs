@@ -14,6 +14,8 @@ use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
+mod common;
+
 fn git_in_dir(dir: &Path, args: &[&str]) {
     let out = Command::new("git")
         .args(args)
@@ -38,7 +40,7 @@ fn init_git_repo() -> tempfile::TempDir {
 }
 
 fn rtk_stdout_in_dir(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new(env!("CARGO_BIN_EXE_rtk"))
+    let out = common::rtk_command()
         .env("LC_ALL", "C")
         .args(args)
         .current_dir(dir)

@@ -7,7 +7,8 @@
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::process::Command;
+
+mod common;
 
 const DIAGNOSTIC: &str = "shim-diagnostic: dependency is missing";
 
@@ -32,7 +33,7 @@ fn rtk_ruff(shim_dir: &tempfile::TempDir, db: &tempfile::TempDir) -> std::proces
         shim_dir.path().display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    Command::new(env!("CARGO_BIN_EXE_rtk"))
+    common::rtk_command()
         .args(["ruff", "check", "."])
         .env("PATH", path)
         // Keep tracking off the developer's real database.

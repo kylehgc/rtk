@@ -16,7 +16,7 @@
 //! paths `CLAUDE_CONFIG_DIR` can't reach (`dirs::config_dir()`,
 //! `dirs::home_dir()`, both real and unoverridable via env on Windows).
 
-use std::process::Command;
+mod common;
 
 #[test]
 fn init_dry_run_tolerates_bom_prefixed_settings_json() {
@@ -27,7 +27,7 @@ fn init_dry_run_tolerates_bom_prefixed_settings_json() {
     // reported back, exactly what Notepad / PowerShell 5.1 write.
     std::fs::write(&settings_path, "\u{feff}{\"foo\": 1}").expect("write settings.json fixture");
 
-    let out = Command::new(env!("CARGO_BIN_EXE_rtk"))
+    let out = common::rtk_command()
         .args(["init", "-g", "--auto-patch", "--dry-run"])
         .current_dir(claude_dir.path())
         .env("CLAUDE_CONFIG_DIR", claude_dir.path())

@@ -29,20 +29,26 @@
 //!
 //! See [docs/tracking.md](../docs/tracking.md) for full documentation.
 
+use crate::core::shell::{quote_program, quote_word};
+use crate::core::user_dirs;
+use crate::core::user_env;
+// The shared shell lexer lives in `discover`.
+use crate::discover::lexer::shell_split;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
+use std::sync::LazyLock;
 use std::time::Instant;
 
 // ── Project path helpers ── // added: project-scoped tracking support
 
 /// Get the canonical project path string for the current working directory.
 fn current_project_path_string() -> String {
-    std::env::current_dir()
+    user_dirs::current_dir()
         .ok()
         .and_then(|p| p.canonicalize().ok())
         .map(|p| p.to_string_lossy().to_string())
@@ -62,7 +68,7 @@ fn project_filter_params(project_path: Option<&str>) -> (Option<String>, Option<
     }
 }
 
-use super::constants::{DEFAULT_HISTORY_DAYS, HISTORY_DB, RTK_DATA_DIR};
+use super::constants::{DEFAULT_HISTORY_DAYS, HISTORY_DB};
 
 /// Main tracking interface for recording and querying command history.
 ///
@@ -202,7 +208,7 @@ pub struct GainSummary {
     pub total_time_ms: u64,
     /// Average execution time per command (milliseconds)
     pub avg_time_ms: u64,
-    /// Top 10 commands by tokens saved: (cmd, count, saved, avg_pct, avg_time_ms)
+    /// Top 10 commands by tokens saved: (cmd, count, saved, weighted_rate, avg_time_ms)
     pub by_command: Vec<(String, usize, usize, f64, u64)>,
     /// Last 30 days of activity: (date, saved_tokens)
     pub by_day: Vec<(String, usize)>,
@@ -295,7 +301,16 @@ pub struct MonthStats {
     pub avg_time_ms: u64,
 }
 
-/// Type alias for command statistics tuple: (command, count, saved_tokens, avg_savings_pct, avg_time_ms)
+/// Type alias for command statistics tuple: (command, count, saved_tokens, weighted_savings_rate, avg_time_ms)
+///
+/// # Warning
+/// The 4th field is a **weighted** savings rate: `SUM(saved_tokens) / SUM(input_tokens) * 100.0`,
+/// guarded so that a group whose every row has zero input reports 0.0 rather than NULL.
+/// Do NOT aggregate this column with `AVG()` — that would produce an unweighted mean that
+/// under-weights high-volume commands. Always recompute it as
+/// `CASE WHEN SUM(input_tokens) > 0 THEN SUM(saved_tokens) / SUM(input_tokens) * 100.0 ELSE 0.0 END`
+/// instead. `saved_tokens` is signed, so the rate can be negative where the 3rd field, being
+/// unsigned, is clamped to 0.
 type CommandStats = (String, usize, usize, f64, u64);
 
 /// Current tracking-DB schema version, stored in the SQLite `user_version` pragma.
@@ -442,6 +457,170 @@ fn should_sample_cleanup(key: &str, rate: u32) -> bool {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     key.hash(&mut hasher);
     hasher.finish().is_multiple_of(rate as u64)
+}
+
+/// Tools that route by a subcommand of their own, so the word after them is still RTK's
+/// routing rather than something the user typed.
+///
+/// A tool that gains subcommands belongs here too, or its label stops at the tool name.
+const SUBCOMMAND_ROUTERS: &[&str] = &[
+    "artisan",
+    "aws",
+    "bun",
+    "cargo",
+    "deno",
+    "docker",
+    "dotnet",
+    "gh",
+    "git",
+    "glab",
+    "go",
+    "gradlew",
+    "gt",
+    "helm",
+    "jest",
+    "kubectl",
+    "mvn",
+    "next",
+    "npm",
+    "php",
+    "pip",
+    "playwright",
+    "phpstan",
+    "pnpm",
+    "prisma",
+    "pulumi",
+    "pytest",
+    "rake",
+    "rspec",
+    "rubocop",
+    "ruff",
+    "sbt",
+    "swift",
+    "systemctl",
+    "terraform",
+    "uv",
+    "vitest",
+    "yarn",
+];
+
+/// A word shaped like a subcommand rather than an operand: no path separator, no `=`, no
+/// quote, no `..`, and not a flag.
+///
+/// Lowercase first, so a revision like `HEAD~3..HEAD` is not mistaken for one, but mixed case
+/// after it -- real subcommands are spelled `testOnly` (sbt) and `testOnly` is not the only
+/// one. A `:` is allowed for a Maven-style goal.
+static SUBCOMMAND_WORD: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"^[a-z][A-Za-z0-9:_-]*$").unwrap());
+
+/// The command label telemetry reports, built only from the words RTK itself chose.
+///
+/// `rtk_cmd` is RTK's own field, but most of what it holds is the user's command line --
+/// `rtk ls /usr/bin`, `rtk curl https://…`, `rtk:toml jq -r '<program>' <path>`. A fixed
+/// three-word prefix put all of those in the payload; `top_passthrough` had the same leak and
+/// was fixed by grouping on the tool alone.
+///
+/// Two words, because the first is always `rtk` (or `rtk:toml`) and carries nothing on its
+/// own. A third only for a tool that routes by its own subcommand, so `rtk git log` stays
+/// apart from `rtk git status`, and only when that word is shaped like a subcommand. The tool
+/// is taken as a basename, so `./gradlew` and `gradlew` are one label and no path survives.
+fn command_label(rtk_cmd: &str) -> String {
+    let words = stored_words(rtk_cmd);
+    let Some(prefix) = words.first() else {
+        return String::new();
+    };
+    let Some(tool) = words.get(1).map(|word| tool_name(word)) else {
+        return prefix.clone();
+    };
+    let subcommand = words
+        .get(2)
+        .filter(|word| SUBCOMMAND_ROUTERS.contains(&tool) && SUBCOMMAND_WORD.is_match(word));
+    match subcommand {
+        Some(subcommand) => format!("{prefix} {tool} {subcommand}"),
+        None => format!("{prefix} {tool}"),
+    }
+}
+
+/// The last component of a program word, on either path separator, so neither
+/// `/home/alice/bin/make` nor `C:\Users\Jane Doe\bin\make.exe` leaves a path behind.
+fn tool_name(word: &str) -> &str {
+    word.rsplit(['/', '\\']).next().unwrap_or(word)
+}
+
+/// The words of a stored command, read back with the project lexer so the quoting
+/// [`display_args`](crate::core::shell::display_args) adds is undone.
+///
+/// A row that is not spelled the way [`quote_word`] writes it is split on whitespace
+/// instead, so a stray `'` cannot pull the arguments into the program word and an
+/// unquoted Windows path keeps its `\`.
+fn stored_words(cmd: &str) -> Vec<String> {
+    // `quote_word` writes no `'` outside its quoting, so a row without one is its
+    // whitespace split, and the lexer has nothing to undo.
+    if !cmd.contains('\'') {
+        return cmd.split_whitespace().map(str::to_owned).collect();
+    }
+    let words = shell_split(cmd);
+    if spelled_as_written(&words, cmd) {
+        return words;
+    }
+    cmd.split_whitespace().map(str::to_owned).collect()
+}
+
+/// SQL for a grouping key on `column`: its first word, or the whole value when it
+/// starts with a quote, for [`key_word`] to read with the quotes removed.
+fn first_word_key_sql(column: &str) -> String {
+    format!(
+        "CASE WHEN SUBSTR({column}, 1, 1) IN ('''', '\"') THEN {column}
+              ELSE TRIM(SUBSTR({column}, 1, INSTR({column} || ' ', ' ') - 1)) END"
+    )
+}
+
+/// The word a [`first_word_key_sql`] key stands for.
+fn key_word(key: String) -> String {
+    if key.starts_with(['\'', '"']) {
+        stored_words(&key).into_iter().next().unwrap_or_default()
+    } else {
+        key
+    }
+}
+
+/// Where the program word sits in a stored row: after `rtk:toml` or `rtk:passthrough`,
+/// after `rtk` and an rtk command that runs a program the user named (`fallback:`,
+/// `proxy`, `err`, `test`, `lint`), after `rtk` alone, and first in any other row.
+fn program_index(words: &[String]) -> usize {
+    match words.first().map(String::as_str) {
+        Some("rtk:toml" | "rtk:passthrough") => 1,
+        Some("rtk") => match words.get(1).map(String::as_str) {
+            Some("fallback:" | "proxy" | "err" | "test" | "lint") => 2,
+            _ => 1,
+        },
+        _ => 0,
+    }
+}
+
+/// Whether `cmd` is `words` joined by single spaces, each spelled as
+/// [`quote_word`] writes it, or as [`quote_program`] writes the program word.
+fn spelled_as_written(words: &[String], cmd: &str) -> bool {
+    let program = program_index(words);
+    let mut rest = cmd;
+    for (i, word) in words.iter().enumerate() {
+        if i > 0 {
+            let Some(after) = rest.strip_prefix(' ') else {
+                return false;
+            };
+            rest = after;
+        }
+        let spelled = rest.strip_prefix(quote_word(word).as_ref()).or_else(|| {
+            (i == program)
+                .then(|| rest.strip_prefix(quote_program(word).as_ref()))
+                .flatten()
+        });
+        let Some(after) = spelled else {
+            return false;
+        };
+        rest = after;
+    }
+    rest.is_empty()
 }
 
 impl Tracker {
@@ -893,7 +1072,9 @@ impl Tracker {
     ) -> Result<Vec<CommandStats>> {
         let (project_exact, project_glob) = project_filter_params(project_path); // added
         let mut stmt = self.conn.prepare(
-            "SELECT rtk_cmd, COUNT(*), SUM(saved_tokens), AVG(savings_pct), AVG(exec_time_ms)
+            "SELECT rtk_cmd, COUNT(*), SUM(saved_tokens),
+                    CASE WHEN SUM(input_tokens) > 0 THEN SUM(saved_tokens) * 100.0 / SUM(input_tokens) ELSE 0.0 END,
+                    AVG(exec_time_ms)
              FROM commands
              WHERE (?1 IS NULL OR project_path = ?1 OR project_path GLOB ?2)
              GROUP BY rtk_cmd
@@ -1234,18 +1415,32 @@ impl Tracker {
         Ok(count)
     }
 
-    /// Get top N commands by frequency (for telemetry).
+    /// Get top N commands by frequency (for telemetry): the tool of each row, as
+    /// `command_label` reads it, so `rtk curl <url>` rows rank together however their
+    /// arguments differ.
     pub fn top_commands(&self, limit: usize) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT rtk_cmd, COUNT(*) as cnt FROM commands
-             GROUP BY rtk_cmd ORDER BY cnt DESC LIMIT ?1",
-        )?;
-        let rows = stmt.query_map(params![limit as i64], |row| {
-            let cmd: String = row.get(0)?;
-            // Extract just the command name (e.g. "rtk git status" → "git")
-            Ok(cmd.split_whitespace().nth(1).unwrap_or(&cmd).to_string())
+        let mut stmt = self.conn.prepare(&format!(
+            "WITH split AS (
+                 SELECT LTRIM(SUBSTR(rtk_cmd, INSTR(rtk_cmd || ' ', ' '))) AS rest FROM commands
+             )
+             SELECT {} AS tool, COUNT(*) AS cnt FROM split GROUP BY tool",
+            first_word_key_sql("rest")
+        ))?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         })?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        let mut counts: HashMap<String, i64> = HashMap::new();
+        for (key, count) in rows.filter_map(|r| r.ok()) {
+            let word = key_word(key);
+            let tool = tool_name(&word);
+            if !tool.is_empty() {
+                *counts.entry(tool.to_string()).or_default() += count;
+            }
+        }
+        let mut top: Vec<(String, i64)> = counts.into_iter().collect();
+        top.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        top.truncate(limit);
+        Ok(top.into_iter().map(|(tool, _)| tool).collect())
     }
 
     /// Get overall savings percentage (for telemetry).
@@ -1284,20 +1479,30 @@ impl Tracker {
     }
 
     /// Top N passthrough commands (0% savings) — commands missing a filter.
-    /// Groups by first word only to avoid leaking arguments into telemetry.
+    /// Groups by the program's file name only, to avoid leaking arguments or a
+    /// path into telemetry.
     pub fn top_passthrough(&self, limit: usize) -> Result<Vec<(String, i64)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT TRIM(SUBSTR(original_cmd, 1, INSTR(original_cmd || ' ', ' ') - 1)) as tool,
-             COUNT(*) as cnt FROM commands
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {} AS program, COUNT(*) AS cnt FROM commands
              WHERE input_tokens = 0 AND output_tokens = 0
-             GROUP BY tool ORDER BY cnt DESC LIMIT ?1",
-        )?;
-        let rows = stmt.query_map(params![limit as i64], |row| {
-            let cmd: String = row.get(0)?;
-            let count: i64 = row.get(1)?;
-            Ok((cmd, count))
+             GROUP BY program",
+            first_word_key_sql("original_cmd")
+        ))?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         })?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        let mut counts: HashMap<String, i64> = HashMap::new();
+        for (key, count) in rows.filter_map(|r| r.ok()) {
+            let word = key_word(key);
+            let program = tool_name(&word);
+            if !program.is_empty() {
+                *counts.entry(program.to_string()).or_default() += count;
+            }
+        }
+        let mut top: Vec<(String, i64)> = counts.into_iter().collect();
+        top.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        top.truncate(limit);
+        Ok(top)
     }
 
     /// Count parse failures in the last 24 hours.
@@ -1312,24 +1517,41 @@ impl Tracker {
     }
 
     /// Count commands with low savings (<30%) — filters that need improvement.
+    ///
+    /// Uses the same weighted rate as `get_by_command`, `SUM(saved_tokens) / SUM(input_tokens)`
+    /// over every call of the command, so that a handful of 0%-savings passthrough calls don't
+    /// dilute a filter that genuinely performs well on high-volume invocations, and so that the
+    /// figure sent here is the one `rtk gain` prints for the same command. A net-regressing
+    /// command (negative rate) is listed: it is the filter most in need of improvement. Exact
+    /// 0% is left out, `passthrough_top` already reports it, and a command whose calls never
+    /// had any input carries no signal, so it is skipped rather than reported as 0%.
     pub fn low_savings_commands(&self, limit: usize) -> Result<Vec<(String, f64)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT rtk_cmd, AVG(savings_pct) as avg_sav FROM commands
-             WHERE input_tokens > 0
+            "SELECT rtk_cmd,
+                    SUM(saved_tokens) * 100.0 / SUM(input_tokens) AS sav
+             FROM commands
              GROUP BY rtk_cmd
-             HAVING avg_sav < 30.0 AND avg_sav > 0.0
+             HAVING SUM(input_tokens) > 0 AND sav < 30.0 AND sav <> 0.0
              ORDER BY COUNT(*) DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![limit as i64], |row| {
             let cmd: String = row.get(0)?;
             let sav: f64 = row.get(1)?;
-            let short = cmd.split_whitespace().take(3).collect::<Vec<_>>().join(" ");
+            let short = command_label(&cmd);
             Ok((short, sav))
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
-    /// Average savings percentage per command (unweighted — each command name counts once).
+    /// Average savings percentage per command (unweighted across command names — each distinct
+    /// command counts once, regardless of how many times it was invoked).
+    ///
+    /// The *inner* rate per command is weighted by volume (`SUM(saved)/SUM(input)`) so that
+    /// passthrough calls don't dilute a command's own rate. The *outer* average across command
+    /// names stays unweighted — this is intentional: it gives equal weight to every filter
+    /// instead of being dominated by the most-called one. Documented in `docs/TELEMETRY.md`.
+    /// A command whose calls never had any input carries no signal about its filter and is
+    /// skipped, not counted as 0%.
     ///
     /// Keeps the honest signed value: a command whose filter consistently emits
     /// more than it saves yields a negative average, mirroring `overall_savings_pct`
@@ -1338,10 +1560,12 @@ impl Tracker {
     /// not on a `0..=100` floor.
     pub fn avg_savings_per_command(&self) -> Result<f64> {
         let avg: f64 = self.conn.query_row(
-            "SELECT COALESCE(AVG(avg_sav), 0.0) FROM (
-                SELECT rtk_cmd, AVG(savings_pct) as avg_sav
-                FROM commands WHERE input_tokens > 0
+            "SELECT COALESCE(AVG(cmd_rate), 0.0) FROM (
+                SELECT rtk_cmd,
+                       SUM(saved_tokens) * 100.0 / SUM(input_tokens) AS cmd_rate
+                FROM commands
                 GROUP BY rtk_cmd
+                HAVING SUM(input_tokens) > 0
             )",
             [],
             |row| row.get(0),
@@ -1466,14 +1690,14 @@ impl Tracker {
 
 /// Map an rtk_cmd to an ecosystem category for telemetry.
 fn categorize_command(rtk_cmd: &str) -> String {
-    let parts: Vec<&str> = rtk_cmd.split_whitespace().collect();
-    let tool = parts.get(1).copied().unwrap_or("other");
+    let words = stored_words(rtk_cmd);
+    let tool = words.get(1).map_or("other", |word| tool_name(word));
     match tool {
         "git" | "gh" | "gt" => "git",
         "cargo" => "cargo",
         "npm" | "npx" | "pnpm" | "bun" | "bunx" | "deno" | "vitest" | "tsc" | "lint"
         | "prettier" | "next" | "playwright" | "prisma" => "js",
-        "pytest" | "ruff" | "mypy" | "pip" | "sqlfluff" => "python",
+        "pytest" | "ruff" | "mypy" | "pip" | "sqlfluff" | "uv" => "python",
         "go" | "golangci-lint" => "go",
         "docker" | "kubectl" => "cloud",
         "rspec" | "rubocop" | "rake" => "ruby",
@@ -1507,19 +1731,28 @@ fn db_sidecars(db_path: &std::path::Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// The database to open: `RTK_DB_PATH` where set, otherwise the configured or
+/// default path. In a test build it is the file the test named in
+/// `RTK_DB_PATH` or its own configuration, or else its scratch database: an
+/// exported `RTK_DB_PATH` names the developer's real one and is never read,
+/// and neither is their `config.toml`.
+///
+/// A test exercising a command path reaches `TimedExecution::track`, which
+/// builds its own `Tracker` and takes no path, leaving it no way to redirect
+/// itself. The rows it writes are indistinguishable from real usage in the
+/// developer's history.
 pub(crate) fn get_db_path() -> Result<PathBuf> {
     // Priority 1: Environment variable RTK_DB_PATH
-    if let Ok(custom_path) = std::env::var("RTK_DB_PATH") {
+    if let Some(custom_path) = user_env::var("RTK_DB_PATH") {
         return Ok(PathBuf::from(custom_path));
     }
 
-    // Priority 2: Configuration file. Reads the process-wide cached config (see
-    // `config::cached_config`), not a fresh `Config::load()`: this runs inside
-    // `Tracker::new()`, which `log_hook_decision` now calls on every single
-    // PreToolUse hook invocation — `hook_rewrite_params()` (called earlier in the
-    // same hook invocation, via `hooks::decision::decide`) already reads config too, so
-    // without caching that's two full disk-read-plus-TOML-parse round trips per
-    // Bash tool call instead of one.
+    // Priority 2: Configuration file, through `config::cached_config` rather
+    // than a fresh `Config::load()`. This runs inside `Tracker::new()`, which
+    // `log_hook_decision` calls on every PreToolUse hook invocation after
+    // `hook_rewrite_params()` has already read the config, so without the
+    // cache each Bash tool call would read and parse it twice. (A test build
+    // loads afresh every time; see `cached_config`.)
     if let Some(db_path) = crate::core::config::cached_config()
         .tracking
         .database_path
@@ -1529,8 +1762,7 @@ pub(crate) fn get_db_path() -> Result<PathBuf> {
     }
 
     // Priority 3: Default platform-specific location
-    let data_dir = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
-    Ok(data_dir.join(RTK_DATA_DIR).join(HISTORY_DB))
+    Ok(user_dirs::data_under(".").join(HISTORY_DB))
 }
 
 /// Whether to gate schema migrations behind `user_version` (the hot-path
@@ -1687,11 +1919,11 @@ pub fn estimate_tokens_from_len(len: usize) -> usize {
 /// Helper for timing command execution and tracking results.
 ///
 /// Preferred API for tracking commands. Automatically measures execution time
-/// and records token savings. Use instead of the deprecated [`track`] function.
+/// and records token savings.
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```ignore
 /// use rtk::tracking::TimedExecution;
 ///
 /// let timer = TimedExecution::start();
@@ -1796,16 +2028,18 @@ impl TimedExecution {
     /// # Arguments
     ///
     /// - `original_cmd`: Standard command (e.g., "git tag --list")
-    /// - `rtk_cmd`: RTK command used (e.g., "rtk git tag --list")
+    /// - `rtk_cmd`: the row's RTK column, built with `passthrough_label` (e.g.,
+    ///   "rtk:passthrough git tag --list")
     ///
     /// # Examples
     ///
     /// ```no_run
-    /// use rtk::tracking::TimedExecution;
+    /// use rtk::tracking::{passthrough_label, TimedExecution};
     ///
     /// let timer = TimedExecution::start();
     /// // ... execute streaming command ...
-    /// timer.track_passthrough("git tag", "rtk git tag");
+    /// let tracked = "git tag --list";
+    /// timer.track_passthrough(tracked, &passthrough_label(tracked));
     /// ```
     pub fn track_passthrough(&self, original_cmd: &str, rtk_cmd: &str) {
         let elapsed_ms = self.start.elapsed().as_millis() as u64;
@@ -1816,10 +2050,18 @@ impl TimedExecution {
     }
 }
 
+/// The rtk_cmd for a run RTK passed through unfiltered: the command as tracked,
+/// behind an `rtk:passthrough` prefix in place of `rtk`, so the row still reads
+/// back as the words that ran.
+pub fn passthrough_label(command: &str) -> String {
+    format!("rtk:passthrough {command}")
+}
+
 /// Format OsString args for tracking display.
 ///
-/// Joins arguments with spaces, converting each to UTF-8 (lossy).
-/// Useful for displaying command arguments in tracking records.
+/// Converts each argument to UTF-8 (lossy) and joins them the way
+/// [`display_args`](crate::core::shell::display_args) does, so a word with a
+/// blank or a shell character reads back as one word.
 ///
 /// # Examples
 ///
@@ -1831,23 +2073,408 @@ impl TimedExecution {
 /// assert_eq!(args_display(&args), "status --short");
 /// ```
 pub fn args_display(args: &[OsString]) -> String {
-    args.iter()
-        .map(|a| a.to_string_lossy())
-        .collect::<Vec<_>>()
-        .join(" ")
+    let words: Vec<_> = args.iter().map(|a| a.to_string_lossy()).collect();
+    crate::core::shell::display_args(&words)
+}
+
+#[cfg(test)]
+mod command_label_tests {
+    use super::*;
+
+    /// The shapes that were putting the user's own words in the telemetry payload. Every one
+    /// is a real `rtk_cmd` from a history database.
+    #[test]
+    fn a_label_never_carries_an_operand() {
+        for (cmd, expected) in [
+            ("rtk ls /usr/bin", "rtk ls"),
+            (
+                "rtk ls /tmp/claude-1000/-home-user-project/abc/scratchpad",
+                "rtk ls",
+            ),
+            ("rtk curl https://mockhttp.org/robots.txt", "rtk curl"),
+            ("rtk tree src/core", "rtk tree"),
+            ("rtk wc src/main.rs", "rtk wc"),
+            ("rtk ls --all=x", "rtk ls"),
+            ("rtk grep some-secret-pattern", "rtk grep"),
+            (
+                "rtk:passthrough rg --column hello /tmp/x/test.txt",
+                "rtk:passthrough rg",
+            ),
+            // The TOML filter path puts the user's whole command line after its own prefix.
+            (
+                "rtk:toml jq -r .data.repository.x /home/user/threads.json",
+                "rtk:toml jq",
+            ),
+            ("rtk:toml du -sh /home/user/project", "rtk:toml du"),
+            ("rtk:toml /tmp/rtk-pr --flag", "rtk:toml rtk-pr"),
+        ] {
+            assert_eq!(command_label(cmd), expected, "{cmd}");
+        }
+    }
+
+    /// The granularity that makes the figure worth sending: a tool routing by its own
+    /// subcommand keeps it, since that word is RTK's routing and not the user's.
+    #[test]
+    fn a_routed_subcommand_survives() {
+        for (cmd, expected) in [
+            (
+                "rtk git log --oneline upstream/develop..HEAD",
+                "rtk git log",
+            ),
+            ("rtk git status --porcelain", "rtk git status"),
+            ("rtk git show HEAD:src/core/utils.rs", "rtk git show"),
+            (
+                "rtk gh issue comment 2493 --repo rtk-ai/rtk",
+                "rtk gh issue",
+            ),
+            ("rtk cargo test --all", "rtk cargo test"),
+            ("rtk docker compose up", "rtk docker compose"),
+            // A wrapper script and its bare name are the same tool.
+            ("rtk ./gradlew build", "rtk gradlew build"),
+            ("rtk gradlew build", "rtk gradlew build"),
+        ] {
+            assert_eq!(command_label(cmd), expected, "{cmd}");
+        }
+    }
+
+    /// A router's third word is only kept when it is shaped like a subcommand, so a revision,
+    /// a path or a flag in that position is still dropped.
+    #[test]
+    fn a_router_does_not_keep_an_operand_in_the_subcommand_slot() {
+        for cmd in [
+            "rtk git /home/user/repo",
+            "rtk git --git-dir=/home/user/.git",
+            "rtk git HEAD~3..HEAD",
+            "rtk docker 'my image'",
+            "rtk go https://example.com/pkg",
+        ] {
+            let label = command_label(cmd);
+            assert_eq!(label.split_whitespace().count(), 2, "{cmd} -> {label}");
+        }
+    }
+
+    /// `discover::rules` is the authority for the tools it describes: anything that declares
+    /// subcommands there routes by them, so its label must keep the third word. This fails
+    /// when a tool gains subcommands in that table and is not added here.
+    #[test]
+    fn command_label_matches_the_discover_rules() {
+        for rule in crate::discover::rules::RULES {
+            if rule.subcmd_savings.is_empty() && rule.subcmd_status.is_empty() {
+                continue;
+            }
+            let Some(tool) = rule.rtk_cmd.split_whitespace().nth(1) else {
+                continue;
+            };
+            assert!(
+                SUBCOMMAND_ROUTERS.contains(&tool),
+                "{} declares subcommands in discover::rules but is not a router here",
+                rule.rtk_cmd
+            );
+            // And the subcommands it declares reach the label. A label carries one routing
+            // word, so a two-word subcommand such as `bun pm ls` keeps its first -- coarser
+            // than the table, never an argument.
+            for (subcommand, _) in rule.subcmd_savings {
+                let Some(first) = subcommand.split_whitespace().next() else {
+                    continue;
+                };
+                let cmd = format!("rtk {tool} {subcommand} --some-flag /some/path");
+                assert_eq!(command_label(&cmd), format!("rtk {tool} {first}"), "{cmd}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_degenerate_label_does_not_panic() {
+        assert_eq!(command_label(""), "");
+        assert_eq!(command_label("rtk"), "rtk");
+        assert_eq!(command_label("   "), "");
+        assert_eq!(command_label("rtk   git   log  "), "rtk git log");
+    }
+
+    /// The fallback stores a program path with an unsafe byte quoted. Its label is the one
+    /// the bare spelling had, with no stray quote, and a blank inside the quotes is not a
+    /// word boundary.
+    #[test]
+    fn a_quoted_program_labels_like_the_bare_one() {
+        assert_eq!(
+            command_label("rtk:toml '/home/josé/bin/make' all"),
+            command_label("rtk:toml /home/josé/bin/make all")
+        );
+        assert_eq!(
+            command_label("rtk:toml '/home/josé/bin/make' all"),
+            "rtk:toml make"
+        );
+        assert_eq!(
+            command_label("rtk:toml '/p/My Tools/run' x"),
+            "rtk:toml run"
+        );
+        assert_eq!(command_label("rtk:toml 'it'\\''s' x"), "rtk:toml it's");
+    }
+
+    #[test]
+    fn top_passthrough_groups_a_quoted_program_with_the_bare_one() {
+        let tracker = Tracker::new_in_memory().expect("Failed to create tracker");
+        for cmd in [
+            "./café.sh a",
+            "'./café.sh' b",
+            "'/p/My Tools/run' x",
+            "git tag",
+        ] {
+            tracker
+                .record(cmd, &format!("rtk fallback: {cmd}"), 0, 0, 1)
+                .expect("Failed to record");
+        }
+        let top = tracker.top_passthrough(5).expect("Failed to query");
+        assert_eq!(
+            top,
+            vec![
+                ("café.sh".to_string(), 2),
+                ("git".to_string(), 1),
+                ("run".to_string(), 1),
+            ]
+        );
+    }
+
+    /// Rows written before quoting are a raw space-join and can hold a lone `'`. Read with
+    /// shell rules, that quote would never close and the arguments would join the program
+    /// word; those rows are split on whitespace, so no argument reaches telemetry.
+    #[test]
+    fn an_unbalanced_quote_in_an_old_row_leaks_no_argument() {
+        assert_eq!(
+            command_label("rtk:toml don't-run.sh --token s3cr3t deploy"),
+            "rtk:toml don't-run.sh"
+        );
+        assert_eq!(
+            command_label("rtk:toml it's.sh /home/alice/private.txt"),
+            "rtk:toml it's.sh"
+        );
+
+        let tracker = Tracker::new_in_memory().expect("Failed to create tracker");
+        let cmd = "don't-run.sh --token s3cr3t deploy";
+        tracker
+            .record(cmd, &format!("rtk:toml {cmd}"), 0, 0, 1)
+            .expect("Failed to record");
+        let top = tracker.top_passthrough(5).expect("Failed to query");
+        assert_eq!(top, vec![("don't-run.sh".to_string(), 1)]);
+        let top = tracker.top_commands(5).expect("Failed to query");
+        assert_eq!(top, vec!["don't-run.sh".to_string()]);
+    }
+
+    /// A Windows program path is quoted when stored, blanks and all. Only its file name
+    /// reaches the label, and an older unquoted row keeps its separators to cut on.
+    #[test]
+    fn a_windows_program_path_labels_as_its_file_name() {
+        let quoted = format!(
+            "rtk:toml {}",
+            crate::core::shell::display_args(&[r"C:\Users\Jane Doe\bin\make.exe", "all"])
+        );
+        assert_eq!(quoted, r"rtk:toml 'C:\Users\Jane Doe\bin\make.exe' all");
+        assert_eq!(command_label(&quoted), "rtk:toml make.exe");
+        assert_eq!(
+            command_label(r"rtk:toml C:\Users\jane\bin\make.exe all"),
+            "rtk:toml make.exe"
+        );
+    }
+
+    /// An old row whose quotes happen to balance is still a raw join, not shell text: it
+    /// does not read back as written, so it is split on whitespace.
+    #[test]
+    fn a_balanced_quote_in_an_old_row_leaks_no_argument() {
+        let row = "rtk:toml it's.sh --token o'brien";
+        assert_eq!(command_label(row), "rtk:toml it's.sh");
+        assert_eq!(
+            command_label(r"rtk:toml C:\tools\run.exe 'a'"),
+            "rtk:toml run.exe"
+        );
+
+        let tracker = Tracker::new_in_memory().expect("Failed to create tracker");
+        let cmd = "it's.sh --token o'brien";
+        tracker
+            .record(cmd, &format!("rtk:toml {cmd}"), 0, 0, 1)
+            .expect("Failed to record");
+        let top = tracker.top_passthrough(5).expect("Failed to query");
+        assert_eq!(top, vec![("it's.sh".to_string(), 1)]);
+        let top = tracker.top_commands(5).expect("Failed to query");
+        assert_eq!(top, vec!["it's.sh".to_string()]);
+    }
+
+    /// A program word shaped like an assignment is stored quoted, and reads back as one word.
+    #[test]
+    fn a_quoted_assignment_shaped_program_reads_back() {
+        let row = crate::core::shell::display_command(&["FOO=1", "KEY=v", "a b"]);
+        assert_eq!(row, "'FOO=1' KEY=v 'a b'");
+        assert_eq!(stored_words(&row), vec!["FOO=1", "KEY=v", "a b"]);
+        assert_eq!(stored_words("'time' ls"), vec!["time", "ls"]);
+    }
+
+    /// The first word is grouped in SQL, so a tool called with different arguments every
+    /// time still ranks by all of its calls.
+    #[test]
+    fn top_passthrough_counts_a_tool_whose_lines_all_differ() {
+        let tracker = Tracker::new_in_memory().expect("Failed to create tracker");
+        for i in 0..300 {
+            let cmd = format!("curl https://x/{i}");
+            tracker
+                .record(&cmd, &format!("rtk fallback: {cmd}"), 0, 0, 1)
+                .expect("Failed to record");
+        }
+        for tool in 0..5 {
+            for _ in 0..40 {
+                let cmd = format!("tool{tool} --same");
+                tracker
+                    .record(&cmd, &format!("rtk fallback: {cmd}"), 0, 0, 1)
+                    .expect("Failed to record");
+            }
+        }
+        let top = tracker.top_passthrough(3).expect("Failed to query");
+        assert_eq!(
+            top,
+            vec![
+                ("curl".to_string(), 300),
+                ("tool0".to_string(), 40),
+                ("tool1".to_string(), 40),
+            ]
+        );
+    }
+
+    /// The program spelling is accepted only where the program word sits; anywhere else a
+    /// quoted `KEY=v` is not how the row was written, so the row is split on whitespace.
+    #[test]
+    fn only_the_program_word_may_carry_the_program_spelling() {
+        assert_eq!(
+            stored_words("rtk:toml 'KEY=v' x"),
+            vec!["rtk:toml", "KEY=v", "x"]
+        );
+        assert_eq!(
+            stored_words("rtk fallback: 'time' ls"),
+            vec!["rtk", "fallback:", "time", "ls"]
+        );
+        assert_eq!(
+            stored_words("rtk:toml x 'KEY=v'"),
+            vec!["rtk:toml", "x", "'KEY=v'"]
+        );
+    }
+
+    #[test]
+    fn categorize_reads_a_row_with_its_quotes_removed() {
+        assert_eq!(categorize_command("rtk git log 'a b'"), "git");
+        assert_eq!(categorize_command("rtk:toml '/p/My Tools/run' x"), "other");
+        assert_eq!(categorize_command("rtk"), "other");
+        // A path-qualified program is categorised by its file name, as its label is.
+        assert_eq!(categorize_command("rtk:toml /usr/local/bin/go build"), "go");
+        assert_eq!(
+            categorize_command("rtk:toml '/p/My Tools/cargo' x"),
+            "cargo"
+        );
+    }
+
+    /// A passthrough row keeps the words that ran, marker in front, so it reads back as
+    /// written; with no arguments there is no stray space.
+    #[test]
+    fn a_passthrough_row_reads_back_as_written() {
+        let tracked = crate::core::shell::with_args(
+            "git diff",
+            &crate::core::shell::display_args(&["a b", "--stat"]),
+        );
+        let row = passthrough_label(&tracked);
+        assert_eq!(row, "rtk:passthrough git diff 'a b' --stat");
+        assert_eq!(
+            stored_words(&row),
+            vec!["rtk:passthrough", "git", "diff", "a b", "--stat"]
+        );
+        assert_eq!(command_label(&row), "rtk:passthrough git diff");
+        assert_eq!(categorize_command(&row), "git");
+
+        let bare = passthrough_label(&crate::core::shell::with_args("git tag", ""));
+        assert_eq!(bare, "rtk:passthrough git tag");
+    }
+
+    /// Rows are reduced to their tool before ranking, so a tool whose lines all differ
+    /// still ranks by all of its calls.
+    #[test]
+    fn top_commands_counts_a_tool_whose_lines_all_differ() {
+        let tracker = Tracker::new_in_memory().expect("Failed to create tracker");
+        for i in 0..300 {
+            tracker
+                .record("raw", &format!("rtk curl https://x/{i}"), 10, 5, 1)
+                .expect("Failed to record");
+        }
+        for i in 0..5 {
+            for _ in 0..40 {
+                tracker
+                    .record("raw", &format!("rtk git status p{i}"), 10, 5, 1)
+                    .expect("Failed to record");
+            }
+        }
+        let top = tracker.top_commands(5).expect("Failed to query");
+        assert_eq!(top, vec!["curl", "git"]);
+    }
+
+    /// A row whose program word has no file name, such as a directory path, and a row with
+    /// no program word at all are left out rather than reported as an empty tool.
+    #[test]
+    fn rows_without_a_tool_name_are_left_out() {
+        let tracker = Tracker::new_in_memory().expect("Failed to create tracker");
+        for (original, rtk_cmd) in [
+            ("./scripts/", "rtk:toml ./scripts/"),
+            ("", "rtk"),
+            ("git tag", "rtk git tag"),
+        ] {
+            tracker
+                .record(original, rtk_cmd, 0, 0, 1)
+                .expect("Failed to record");
+        }
+        let top = tracker.top_commands(5).expect("Failed to query");
+        assert_eq!(top, vec!["git"]);
+        let top = tracker.top_passthrough(5).expect("Failed to query");
+        assert_eq!(top, vec![("git".to_string(), 1)]);
+    }
+
+    #[test]
+    fn top_commands_reads_a_quoted_program_as_its_name() {
+        let tracker = Tracker::new_in_memory().expect("Failed to create tracker");
+        for (rtk_cmd, times) in [
+            ("rtk:toml './café.sh' a", 3),
+            ("rtk:toml '/p/My Tools/run' x", 2),
+            ("rtk git status", 1),
+        ] {
+            for _ in 0..times {
+                tracker
+                    .record("raw", rtk_cmd, 10, 5, 1)
+                    .expect("Failed to record");
+            }
+        }
+        let top = tracker.top_commands(5).expect("Failed to query");
+        assert_eq!(top, vec!["café.sh", "run", "git"]);
+    }
+
+    /// The property the whole change exists for, asserted over every shape above at once: a
+    /// label may not contain a character that only an argument brings.
+    #[test]
+    fn no_label_contains_argument_shaped_characters() {
+        for cmd in [
+            "rtk ls /usr/bin",
+            "rtk curl https://mockhttp.org/robots.txt",
+            "rtk:toml jq -r .x /home/user/f.json",
+            "rtk git log --oneline upstream/develop..HEAD",
+            "rtk ./gradlew build",
+            "rtk grep user@example.com",
+            "rtk read \"quoted path\"",
+            "rtk wc ~/notes.txt",
+        ] {
+            let label = command_label(cmd);
+            for bad in ['/', '=', '"', '\'', '@', '~'] {
+                assert!(!label.contains(bad), "{cmd} -> {label} carries {bad:?}");
+            }
+            assert!(!label.contains(".."), "{cmd} -> {label}");
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    /// Serializes tests that mutate the process-global `RTK_DB_PATH` env var.
-    /// Must be a single shared static: a `static` declared inside each test
-    /// function body is a distinct static per function, not a shared lock, so
-    /// tests using separate locals don't actually serialize against each other
-    /// and can race on the same global env var under parallel `cargo test`.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use crate::core::test_isolation;
 
     // 1. estimate_tokens — verify ~4 chars/token ratio
     #[test]
@@ -1868,6 +2495,13 @@ mod tests {
 
         let single = vec![OsString::from("log")];
         assert_eq!(args_display(&single), "log");
+
+        let quoted = vec![
+            OsString::from("-m"),
+            OsString::from("a b"),
+            OsString::from("foo()"),
+        ];
+        assert_eq!(args_display(&quoted), "-m 'a b' 'foo()'");
     }
 
     // 3. Tracker::record + get_recent — round-trip DB
@@ -2016,27 +2650,22 @@ mod tests {
     // record once 5+ other rows land first.
     #[test]
     fn test_timed_execution_records_time() {
-        use std::env;
-        let _guard = ENV_LOCK.lock().unwrap();
-        let db_path = env::temp_dir().join(format!(
+        let db_path = test_isolation::scratch_dir().join(format!(
             "rtk_test_timed_exec_records_{}.db",
             std::process::id()
         ));
         // nosemgrep: filesystem-deletion -- test-only cleanup of this test's own throwaway temp DB file, not production/user data.
         let _ = std::fs::remove_file(&db_path);
-        env::set_var("RTK_DB_PATH", &db_path);
+        user_env::with_path("RTK_DB_PATH", Some(&db_path), || {
+            let timer = TimedExecution::start();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            timer.track("test cmd", "rtk test", "raw input data", "filtered");
 
-        let timer = TimedExecution::start();
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        timer.track("test cmd", "rtk test", "raw input data", "filtered");
-
-        // Verify via DB that record exists
-        let tracker = Tracker::new().expect("Failed to create tracker");
-        let recent = tracker.get_recent(5).expect("Failed to get recent");
-        assert!(recent.iter().any(|r| r.rtk_cmd == "rtk test"));
-
-        drop(tracker);
-        env::remove_var("RTK_DB_PATH");
+            // Verify via DB that record exists
+            let tracker = Tracker::new().expect("Failed to create tracker");
+            let recent = tracker.get_recent(5).expect("Failed to get recent");
+            assert!(recent.iter().any(|r| r.rtk_cmd == "rtk test"));
+        });
         // nosemgrep: filesystem-deletion -- test-only cleanup of this test's own throwaway temp DB file, not production/user data.
         let _ = std::fs::remove_file(&db_path);
     }
@@ -2045,57 +2674,48 @@ mod tests {
     // Same isolation rationale as test_timed_execution_records_time above.
     #[test]
     fn test_timed_execution_passthrough() {
-        use std::env;
-        let _guard = ENV_LOCK.lock().unwrap();
-        let db_path = env::temp_dir().join(format!(
+        let db_path = test_isolation::scratch_dir().join(format!(
             "rtk_test_timed_exec_passthrough_{}.db",
             std::process::id()
         ));
         // nosemgrep: filesystem-deletion -- test-only cleanup of this test's own throwaway temp DB file, not production/user data.
         let _ = std::fs::remove_file(&db_path);
-        env::set_var("RTK_DB_PATH", &db_path);
+        user_env::with_path("RTK_DB_PATH", Some(&db_path), || {
+            let timer = TimedExecution::start();
+            timer.track_passthrough("git tag", &passthrough_label("git tag"));
 
-        let timer = TimedExecution::start();
-        timer.track_passthrough("git tag", "rtk git tag (passthrough)");
+            let tracker = Tracker::new().expect("Failed to create tracker");
+            let recent = tracker.get_recent(5).expect("Failed to get recent");
 
-        let tracker = Tracker::new().expect("Failed to create tracker");
-        let recent = tracker.get_recent(5).expect("Failed to get recent");
+            let pt = recent
+                .iter()
+                .find(|r| r.rtk_cmd.contains("passthrough"))
+                .expect("Passthrough record not found");
 
-        let pt = recent
-            .iter()
-            .find(|r| r.rtk_cmd.contains("passthrough"))
-            .expect("Passthrough record not found");
-
-        // savings_pct should be 0 for passthrough
-        assert_eq!(pt.savings_pct, 0.0);
-        assert_eq!(pt.saved_tokens, 0);
-
-        drop(tracker);
-        env::remove_var("RTK_DB_PATH");
+            // savings_pct should be 0 for passthrough
+            assert_eq!(pt.savings_pct, 0.0);
+            assert_eq!(pt.saved_tokens, 0);
+        });
         // nosemgrep: filesystem-deletion -- test-only cleanup of this test's own throwaway temp DB file, not production/user data.
         let _ = std::fs::remove_file(&db_path);
     }
 
     // 7. get_db_path respects environment variable RTK_DB_PATH
     // 8. get_db_path falls back to default when no custom config
-    // Combined into one test to avoid env var race between parallel tests
+    // Combined into one test so the set and unset cases cannot interleave.
     #[test]
     fn test_db_path_env_and_default() {
-        use std::env;
-        let _guard = ENV_LOCK.lock().unwrap();
+        let custom_path = test_isolation::scratch_dir().join("rtk_test_custom.db");
+        user_env::with_path("RTK_DB_PATH", Some(&custom_path), || {
+            let db_path = get_db_path().expect("Failed to get db path");
+            assert_eq!(db_path, custom_path);
+        });
 
-        let custom_path = env::temp_dir().join("rtk_test_custom.db");
-        env::set_var("RTK_DB_PATH", &custom_path);
-        let db_path = get_db_path().expect("Failed to get db path");
-        assert_eq!(db_path, custom_path);
-
-        env::remove_var("RTK_DB_PATH");
-        let db_path = get_db_path().expect("Failed to get db path");
-        assert!(
-            db_path.ends_with("rtk/history.db"),
-            "expected default path ending with rtk/history.db, got: {}",
-            db_path.display()
-        );
+        user_env::with_vars(&[("RTK_DB_PATH", None)], || {
+            // This test's scratch database, never the developer's own.
+            let db_path = get_db_path().expect("Failed to get db path");
+            assert_eq!(db_path, test_isolation::db_path());
+        });
     }
 
     // 8b. Tracker::new() gates schema migration behind PRAGMA user_version, so a
@@ -2103,31 +2723,26 @@ mod tests {
     // still works (and doesn't re-run/fail the migration).
     #[test]
     fn test_schema_migration_gated_by_user_version() {
-        use std::env;
-        let _guard = ENV_LOCK.lock().unwrap();
-
-        let db_path =
-            env::temp_dir().join(format!("rtk_test_schema_version_{}.db", std::process::id()));
+        let db_path = test_isolation::scratch_dir()
+            .join(format!("rtk_test_schema_version_{}.db", std::process::id()));
         // nosemgrep: filesystem-deletion -- test-only cleanup of this test's own throwaway temp DB file, not production/user data.
         let _ = std::fs::remove_file(&db_path);
-        env::set_var("RTK_DB_PATH", &db_path);
+        user_env::with_path("RTK_DB_PATH", Some(&db_path), || {
+            let tracker = Tracker::new().expect("first open should run migrations");
+            let version: i64 = tracker
+                .conn
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .expect("user_version should be readable");
+            assert_eq!(version, SCHEMA_VERSION);
+            drop(tracker);
 
-        let tracker = Tracker::new().expect("first open should run migrations");
-        let version: i64 = tracker
-            .conn
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .expect("user_version should be readable");
-        assert_eq!(version, SCHEMA_VERSION);
-        drop(tracker);
-
-        // Second open on the same file must skip migrations without erroring, and
-        // the DB must still be fully usable (tables from the first open persist).
-        let tracker2 = Tracker::new().expect("second open should skip migrations cleanly");
-        tracker2
-            .record("git status", "rtk git status", 100, 20, 50)
-            .expect("commands table should already exist and accept writes");
-
-        env::remove_var("RTK_DB_PATH");
+            // Second open on the same file must skip migrations without erroring, and
+            // the DB must still be fully usable (tables from the first open persist).
+            let tracker2 = Tracker::new().expect("second open should skip migrations cleanly");
+            tracker2
+                .record("git status", "rtk git status", 100, 20, 50)
+                .expect("commands table should already exist and accept writes");
+        });
         // nosemgrep: filesystem-deletion -- test-only cleanup of this test's own throwaway temp DB file, not production/user data.
         let _ = std::fs::remove_file(&db_path);
     }
@@ -2139,15 +2754,13 @@ mod tests {
     // init` relies on instead of a dedicated repair flag.
     //
     // Exercises the migration function directly on its own throwaway on-disk
-    // connection rather than going through ensure_schema_fresh()/Tracker::new()
-    // (which read the process-global RTK_DB_PATH env var): this test doesn't
-    // need the ENV_LOCK serialization those need, and — critically — never
-    // leaves the *shared default* tracking DB in a dropped-table state where
-    // an unrelated, concurrently-running test that opens Tracker::new()
-    // without its own RTK_DB_PATH override could observe it.
+    // connection rather than going through ensure_schema_fresh()/Tracker::new(),
+    // so it never leaves the *shared default* tracking DB in a dropped-table
+    // state where an unrelated, concurrently-running test that opens
+    // Tracker::new() without its own RTK_DB_PATH could observe it.
     #[test]
     fn test_run_schema_migrations_heals_dropped_table_when_forced() {
-        let db_path = std::env::temp_dir().join(format!(
+        let db_path = test_isolation::scratch_dir().join(format!(
             "rtk_test_heal_migrations_{}.db",
             std::process::id()
         ));
@@ -2409,10 +3022,12 @@ mod tests {
     fn test_earliest_hook_decision_timestamp() {
         let tracker = Tracker::new_in_memory().expect("Failed to create in-memory tracker");
 
-        assert!(tracker
-            .earliest_hook_decision_timestamp()
-            .expect("query failed")
-            .is_none());
+        assert!(
+            tracker
+                .earliest_hook_decision_timestamp()
+                .expect("query failed")
+                .is_none()
+        );
 
         tracker
             .record_hook_decision(
@@ -2426,10 +3041,12 @@ mod tests {
             )
             .expect("Failed to record hook decision");
 
-        assert!(tracker
-            .earliest_hook_decision_timestamp()
-            .expect("query failed")
-            .is_some());
+        assert!(
+            tracker
+                .earliest_hook_decision_timestamp()
+                .expect("query failed")
+                .is_some()
+        );
     }
 
     #[test]
@@ -2450,10 +3067,12 @@ mod tests {
 
         tracker.reset_all().expect("Failed to reset");
 
-        assert!(tracker
-            .earliest_hook_decision_timestamp()
-            .expect("query failed")
-            .is_none());
+        assert!(
+            tracker
+                .earliest_hook_decision_timestamp()
+                .expect("query failed")
+                .is_none()
+        );
     }
 
     // rtk-ai/rtk#3206 review: hook_decisions grows unbounded for a user whose
@@ -2534,5 +3153,266 @@ mod tests {
         for cmd in ["rtk bun install", "rtk bunx cowsay", "rtk deno test"] {
             assert_eq!(categorize_command(cmd), "js", "{cmd}");
         }
+    }
+
+    #[test]
+    fn test_categorize_uv_as_python() {
+        for cmd in ["rtk uv sync", "rtk uv run pytest", "rtk uv pip install foo"] {
+            assert_eq!(categorize_command(cmd), "python", "{cmd}");
+        }
+    }
+
+    // 14. get_by_command uses weighted savings rate, not unweighted average
+    //
+    // Regression test for: AVG(savings_pct) gave wrong results when small invocations
+    // with 0% savings diluted the average of high-volume commands.
+    //
+    // Setup: one small command (10% savings) + one large command (95% savings).
+    // Unweighted avg would be ~52.5%. Weighted rate must be ~95%.
+    //
+    // Rows carry a project path so the project-filtered form of the query is the one
+    // under test.
+    #[test]
+    fn test_get_by_command_weighted_savings_rate() {
+        let tracker = Tracker::new_in_memory().expect("Failed to create tracker");
+        let cmd_name = "weighted_test";
+        let project = "/tmp/rtk_weighted_test";
+
+        // Override project_path by inserting directly via conn
+        let saved_small = 10_i64; // 100 in - 90 out = 10 saved → 10%
+        let saved_large = 95_000_i64; // 100_000 in - 5_000 out = 95_000 saved → 95%
+        tracker
+            .conn
+            .execute(
+                "INSERT INTO commands (timestamp, original_cmd, rtk_cmd, project_path, input_tokens, output_tokens, saved_tokens, savings_pct, exec_time_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                rusqlite::params![
+                    chrono::Utc::now().to_rfc3339(),
+                    cmd_name, cmd_name, project,
+                    100_i64, 90_i64, saved_small, 10.0_f64, 5_i64
+                ],
+            )
+            .expect("Failed to insert small invocation");
+        tracker
+            .conn
+            .execute(
+                "INSERT INTO commands (timestamp, original_cmd, rtk_cmd, project_path, input_tokens, output_tokens, saved_tokens, savings_pct, exec_time_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                rusqlite::params![
+                    chrono::Utc::now().to_rfc3339(),
+                    cmd_name, cmd_name, project,
+                    100_000_i64, 5_000_i64, saved_large, 95.0_f64, 10_i64
+                ],
+            )
+            .expect("Failed to insert large invocation");
+
+        let by_cmd = tracker
+            .get_by_command(Some(project))
+            .expect("Failed to get by_command stats");
+
+        let entry = by_cmd
+            .iter()
+            .find(|(name, _, _, _, _)| name == cmd_name)
+            .expect("Test command not found in by_command stats");
+
+        let (_name, _count, _saved, rate, _time) = entry;
+
+        // Weighted rate = (10 + 95_000) / (100 + 100_000) * 100.0 ≈ 94.9%
+        // Unweighted avg would be (10.0 + 95.0) / 2 = 52.5%
+        // The gap proves the fix works.
+        assert!(
+            *rate > 90.0,
+            "Expected weighted rate >90%, got {:.1}% — unweighted avg would be ~52.5%",
+            rate
+        );
+    }
+
+    // 15. The weighted rate tracks SUM(saved_tokens), not the mean of per-call percentages
+    //
+    // A long-tailed pair under one rtk_cmd: a 1M-token call saving 90% and a 100-token
+    // call saving 10%. The mean of the two percentages is 50%; the weighted rate is
+    // ~89.99% and is the figure consistent with the Saved column in the same row.
+    #[test]
+    fn test_weighted_rate_via_get_by_command() {
+        let tracker = Tracker::new_in_memory().expect("Failed to create tracker");
+
+        tracker
+            .record("grep huge", "rtk grep", 1_000_000, 100_000, 50)
+            .expect("record huge");
+        tracker
+            .record("grep tiny", "rtk grep", 100, 90, 5)
+            .expect("record tiny");
+
+        let by_command = tracker.get_by_command(None).expect("get_by_command");
+
+        let (_cmd, count, saved, pct, _avg_time) = by_command
+            .iter()
+            .find(|(cmd, ..)| cmd == "rtk grep")
+            .expect("rtk grep row not found");
+
+        assert_eq!(*count, 2);
+        assert_eq!(*saved, 900_010);
+        let expected = 900_010.0 / 1_000_100.0 * 100.0;
+        assert!(
+            (pct - expected).abs() < 0.01,
+            "expected weighted rate ~{expected:.2}, got {pct:.2}"
+        );
+        assert!(
+            (pct - 50.0).abs() > 1.0,
+            "mean-of-percentages regression: got {pct:.2}"
+        );
+    }
+
+    // 16. The rate reaches the gain summary through get_summary(), not only get_by_command
+    #[test]
+    fn test_weighted_rate_via_get_summary() {
+        let tracker = Tracker::new_in_memory().expect("Failed to create tracker");
+
+        tracker
+            .record("large grep", "rtk grep", 1000, 100, 10)
+            .expect("Failed to record large command");
+        tracker
+            .record("small grep", "rtk grep", 10, 9, 20)
+            .expect("Failed to record small command");
+
+        let summary = tracker.get_summary().expect("Failed to get summary");
+        let (_, count, saved, savings_pct, _) = summary
+            .by_command
+            .iter()
+            .find(|(command, _, _, _, _)| command == "rtk grep")
+            .expect("rtk grep stats not found");
+
+        assert_eq!(*count, 2);
+        assert_eq!(*saved, 901);
+        let expected_pct = 901.0 / 1010.0 * 100.0;
+        assert!(
+            (savings_pct - expected_pct).abs() < 1e-10,
+            "expected weighted rate {expected_pct}, got {savings_pct}"
+        );
+    }
+
+    // 17. A group whose every call has zero input reports 0%, not a division by zero
+    #[test]
+    fn test_by_command_zero_input_has_zero_savings_percentage() {
+        let tracker = Tracker::new_in_memory().expect("Failed to create tracker");
+        tracker
+            .record("interactive command", "rtk proxy", 0, 0, 5)
+            .expect("Failed to record passthrough command");
+
+        let summary = tracker.get_summary().expect("Failed to get summary");
+        let (_, _, _, savings_pct, _) = summary
+            .by_command
+            .iter()
+            .find(|(command, _, _, _, _)| command == "rtk proxy")
+            .expect("rtk proxy stats not found");
+
+        assert_eq!(*savings_pct, 0.0);
+    }
+
+    // 18. low_savings_commands reports the same weighted rate as the `rtk gain` By Command
+    // table, including net-regressing commands, and nothing for commands without input.
+    //
+    // `rtk ls -R`: one 95% call plus four 0% passthrough calls. Unweighted AVG(savings_pct)
+    // over those five rows is 19%, under the 30% threshold, so the command would reach
+    // telemetry as low-savings while `get_by_command` shows it at ~94.6% in the same
+    // `rtk gain` run. Weighted, 95_000 / 100_400 ≈ 94.6%: not listed.
+    // `rtk grep`: 25% on one call, then a call with no input that still printed 10 tokens.
+    // Every row counts, as in `get_by_command`: (250 - 10) / 1_000 = 24%, listed at 24.
+    // `rtk read`: emits more than it saves, -50%. Listed: it is the filter to fix first.
+    // `rtk proxy`: never had any input. Nothing to say about its filter, not listed.
+    #[test]
+    fn test_low_savings_commands_matches_gain_weighted_rate() {
+        let tracker = Tracker::new_in_memory().expect("Failed to create tracker");
+        tracker
+            .record("ls -R big", "rtk ls -R", 100_000, 5_000, 10)
+            .expect("record big call");
+        for _ in 0..4 {
+            tracker
+                .record("ls -R empty", "rtk ls -R", 100, 100, 5)
+                .expect("record passthrough call");
+        }
+        tracker
+            .record("grep x", "rtk grep", 1_000, 750, 5)
+            .expect("record 25% call");
+        tracker
+            .record("grep none", "rtk grep", 0, 10, 5)
+            .expect("record no-input call");
+        tracker
+            .record("read big.json", "rtk read", 100, 150, 5)
+            .expect("record regressing call");
+        tracker
+            .record("interactive", "rtk proxy", 0, 0, 5)
+            .expect("record zero-input call");
+
+        let low = tracker
+            .low_savings_commands(10)
+            .expect("low_savings_commands");
+        let listed: Vec<(&str, f64)> = low.iter().map(|(n, r)| (n.as_str(), *r)).collect();
+        assert_eq!(
+            listed.len(),
+            2,
+            "expected `rtk grep` (24%) and `rtk read` (-50%); ~94.6% weighted must not be \
+             listed (unweighted AVG(savings_pct) would put it at 19%), got {listed:?}"
+        );
+        assert_eq!(listed[0].0, "rtk grep");
+        assert!((listed[0].1 - 24.0).abs() < 1e-9, "got {listed:?}");
+        assert_eq!(listed[1].0, "rtk read");
+        assert!((listed[1].1 - (-50.0)).abs() < 1e-9, "got {listed:?}");
+
+        // The figure sent to telemetry is the one `rtk gain` prints for the same command.
+        let summary = tracker.get_summary().expect("get_summary");
+        for (name, rate) in &low {
+            let (_, _, _, gain_rate, _) = summary
+                .by_command
+                .iter()
+                .find(|(command, _, _, _, _)| command == name)
+                .unwrap_or_else(|| panic!("{name} missing from by_command"));
+            assert!(
+                (gain_rate - rate).abs() < 1e-9,
+                "{name}: telemetry says {rate}, rtk gain says {gain_rate}"
+            );
+        }
+    }
+
+    // 19. avg_savings_per_command weights each command's own rate by volume (every call
+    // counted, as in test 18), then averages the per-command rates without weighting: each
+    // command name counts once, and a command that never had any input is not counted.
+    //
+    // Same rows as test 18: `rtk ls -R` ≈ 94.6% (19% if the inner aggregate were
+    // AVG(savings_pct)), `rtk grep` 24%, `rtk read` -50%, `rtk proxy` skipped.
+    #[test]
+    fn test_avg_savings_per_command_inner_rate_is_weighted() {
+        let tracker = Tracker::new_in_memory().expect("Failed to create tracker");
+        tracker
+            .record("ls -R big", "rtk ls -R", 100_000, 5_000, 10)
+            .expect("record big call");
+        for _ in 0..4 {
+            tracker
+                .record("ls -R empty", "rtk ls -R", 100, 100, 5)
+                .expect("record passthrough call");
+        }
+        tracker
+            .record("grep x", "rtk grep", 1_000, 750, 5)
+            .expect("record 25% call");
+        tracker
+            .record("grep none", "rtk grep", 0, 10, 5)
+            .expect("record no-input call");
+        tracker
+            .record("read big.json", "rtk read", 100, 150, 5)
+            .expect("record regressing call");
+        tracker
+            .record("interactive", "rtk proxy", 0, 0, 5)
+            .expect("record zero-input call");
+
+        let avg = tracker
+            .avg_savings_per_command()
+            .expect("avg_savings_per_command");
+        let ls_rate = 95_000.0 * 100.0 / 100_400.0;
+        let expected = (ls_rate + 24.0 - 50.0) / 3.0;
+        assert!(
+            (avg - expected).abs() < 1e-6,
+            "expected ({ls_rate:.1} + 24 - 50) / 3 = {expected:.1}%, got {avg:.1}% \
+             (an unweighted inner AVG(savings_pct) would give (19 + 12.5 - 50) / 3 = -6.2%)"
+        );
     }
 }
