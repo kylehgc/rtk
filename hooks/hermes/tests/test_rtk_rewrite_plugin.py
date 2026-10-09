@@ -50,7 +50,7 @@ def write_fake_rtk(bin_dir):
                     "use std::env;",
                     "fn main() {",
                     "    let args: Vec<String> = env::args().skip(1).collect();",
-                    '    if args == ["rewrite", "git status"] {',
+                    '    if args == ["rewrite", "--", "git status"] {',
                     '        println!("rtk git status");',
                     "        return;",
                     "    }",
