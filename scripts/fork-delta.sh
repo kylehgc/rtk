@@ -68,8 +68,6 @@ HEALED_SHAS=(
   7db14a3 # 2026-10-09 declined upstream: the `--` in the legacy shell hooks; aeppling and KuSh closed upstream issue 1350 as legacy-only (native `rtk hook` is current). Upstream never carried it, so the 2026-08-05 note here ("merged ... byte-identical") was wrong; scripts restored to upstream's
   c8d6e28 # 2026-10-09 withdrawn: Claude `input`-key fallback; KuSh on upstream PR 2535: no Claude Code hook event sends it, and it widens the trigger surface
   cc5b6d3 # 2026-10-09 withdrawn: PowerShell Claude matcher; KuSh on upstream PR 2075: it runs PowerShell through the bash rewriter (mangles `\` paths, takes over ls/ps/curl aliases, ignores PowerShell-scoped deny rules). init/ restored to upstream's
-  46d16ea # 2026-10-09 withdrawn: status/log machine-output passthrough; KuSh closed upstream PR 2573: upstream prints raw for -z/--name-only/--numstat/--raw/--format=%H, and runs other user log formats through its filter by design. The porcelain final newline stays fixed by d536891
-  da407dc # 2026-10-09 amendment to 46d16ea, removed with it
   34946b7 # 2026-10-09 superseded by the re-adoption of the same author's current upstream PR 3571 (aa5f31e), which keeps stderr on its own stream after upstream PR 3772
   6f4d9f7 # 2026-10-09 amendment to 34946b7, removed with it (upstream PR 3571 strips the [warn] prefix itself)
   59f2564 # 2026-10-09 amendment to 34946b7, removed with it (upstream PR 3571 covers the rtk format call site itself)

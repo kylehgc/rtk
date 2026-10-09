@@ -49,7 +49,7 @@ output *larger* and more correct. This fork does not claim to save more tokens t
 upstream — that is upstream's pitch. It claims to not lose your errors.
 
 <!-- FORK_DELTA_START -->
-**36 fixes in this fork that upstream does not have.** Each links to the commit,
+**38 fixes in this fork that upstream does not have.** Each links to the commit,
 where the original author is recorded. Adopted fixes come from community PRs that upstream
 has not merged — see the [adoption issues](https://github.com/kylehgc/rtk/issues?q=is%3Aissue+Adopt+upstream)
 for provenance.
@@ -93,6 +93,8 @@ upstream in another form.
 | fix(cargo): stop the raw-tail fallback restating captured warnings | [`f954b615`](https://github.com/kylehgc/rtk/commit/f954b615) |
 | fix(cargo): keep compile errors visible when warnings are captured | [`6235d4b9`](https://github.com/kylehgc/rtk/commit/6235d4b9) |
 | fix(cargo): preserve compiler warnings in cargo test output on passing runs | [`ff139867`](https://github.com/kylehgc/rtk/commit/ff139867) |
+| fix(git): correct the machine-output flag set and stop diluting gain stats | [`da407dc3`](https://github.com/kylehgc/rtk/commit/da407dc3) |
+| fix(git): keep machine output raw | [`46d16ead`](https://github.com/kylehgc/rtk/commit/46d16ead) |
 | fix(pnpm): preserve install failure output | [`2bbe81fd`](https://github.com/kylehgc/rtk/commit/2bbe81fd) |
 | fix(hook): hook warning repeats on every command on Windows | [`8945b96b`](https://github.com/kylehgc/rtk/commit/8945b96b) |
 | fix(hooks): add -- terminator to hermes, opencode, and pi rewrite callers | [`82534016`](https://github.com/kylehgc/rtk/commit/82534016) |

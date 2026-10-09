@@ -50,16 +50,16 @@ Incoming upstream work that collided with, or now constrains, fork code:
 | `hooks/{claude,cursor}/rtk-rewrite.sh` | `--` before `"$CMD"`, on upstream's `env -u RTK_REWRITE_HOST` line | ~~upstream dropped `--` in `c6f484f`~~ **Corrected:** upstream never carried `--`; `c6f484f` only edited the same line. Upstream closed this fix as legacy-only (rtk-ai/rtk#2475, issue rtk-ai/rtk#1350), so the alignment follow-up below restores upstream's scripts verbatim |
 | `src/cmds/git/git_cmd.rs` | `requests_help` passthrough, now placed after upstream's double-dash/stash restore | upstream #3944 closed for #4348, **still open** |
 | `src/cmds/js/{playwright,pnpm,vitest}_cmd.rs` | `passthrough_warning_reason` import | fork-only |
-| `src/cmds/js/prettier_cmd.rs` | combined-stream, exit-aware filter (`run_filtered_with_exit`), upstream's `display_args` | fork-only (#2878) |
+| `src/cmds/js/prettier_cmd.rs` | combined-stream, exit-aware filter (`run_filtered_with_exit`), upstream's `display_args` | fork-only (#2878). **Superseded in the follow-up below:** upstream's filter plus rtk-ai/rtk#3571 |
 | `src/cmds/js/tsc_cmd.rs` | informational passthrough, now via `display_args` | fork-only |
 | `src/cmds/js/vitest_cmd.rs` | `strip_jest_conflicting_args` inside upstream's `jest_invocation` (replaces `should_skip_jest_arg`, which still leaks `--reporters default`'s value as a test filter); exit-code-aware passthrough warning on `run_framework_test` | fork-only |
 | `src/cmds/rust/cargo_cmd.rs` | compiler-warning count on passing runs, in upstream's let-chain | fork-only |
 | `src/core/runner.rs` | `requests_help` + its `run_inner` guard, beside upstream's `forwarded_stderr` | #4348 open |
 | `src/discover/rules.rs` | git rule without `yadm`, with upstream's new terminator group | upstream #3414 open |
 | `src/hooks/hook_check.rs` | `touch_warn_marker` (non-empty payload) + its two tests | upstream still writes `b""` |
-| `src/hooks/hook_cmd.rs` | `claude_payload_input` (either key), `contains_already_rtk_segment`, permission-mode-aware `"ask"`; upstream's `pre_tool_use_rewrite_output` now reads input through `claude_payload_input` (identical for every caller that has `tool_input.command`) | fork-only |
+| `src/hooks/hook_cmd.rs` | **(`claude_payload_input` and `"ask"` dropped in the follow-up below)** `claude_payload_input` (either key), `contains_already_rtk_segment`, permission-mode-aware `"ask"`; upstream's `pre_tool_use_rewrite_output` now reads input through `claude_payload_input` (identical for every caller that has `tool_input.command`) | fork-only |
 | `src/hooks/permissions.rs` | `deny_or_ask_matches`: the rtk-prefix see-through (`segment_matches`) composed with upstream's `strip_grammar_residue`, deny/ask only | fork-only |
-| `src/hooks/init.rs` → `init/{claude,mod,pi}.rs` | PowerShell matcher ported: `CLAUDE_HOOK_MATCHERS`, `insert_claude_hook_entries` (Claude only — upstream's `insert_hook_entry` also serves Codex and stays Bash-only), `missing_hook_matchers`, three-state `--show`; matcher checks reuse upstream's `claude_group_covers` logic, so `Bash|PowerShell` counts for both. Three fork Pi-plugin hashes re-added to `KNOWN_PI_PLUGIN_HASHES` | upstream #2075 closed unmerged; no equivalent |
+| `src/hooks/init.rs` → `init/{claude,mod,pi}.rs` | PowerShell matcher ported: `CLAUDE_HOOK_MATCHERS`, `insert_claude_hook_entries` (Claude only — upstream's `insert_hook_entry` also serves Codex and stays Bash-only), `missing_hook_matchers`, three-state `--show`; matcher checks reuse upstream's `claude_group_covers` logic, so `Bash|PowerShell` counts for both. Three fork Pi-plugin hashes re-added to `KNOWN_PI_PLUGIN_HASHES` | upstream #2075 closed unmerged. **Dropped in the follow-up below:** the matcher is gone, `init/{claude,mod}.rs` are upstream's; the Pi hashes stay |
 | `src/main.rs` | `run_fallback` keeps `args_os` (non-UTF-8 safe) and feeds it to upstream's `child_args`; `forward_help_to_wrapped_tools` beside upstream's `split_leading_negations` | fork-only / #4348 open |
 | `tests/guard_integration_test.rs` | `git_diff_external_driver_output_is_not_dropped` beside upstream's new routing tests | upstream #3607 open |
 | `tests/stderr_only_failure_test.rs` (add/add) | upstream's file, with the fork's prettier variant of the no-invented-success test and the fork's help-forwarding tests appended | — |
@@ -156,10 +156,25 @@ a behaviour on purpose, the fork takes upstream's. Only gaps upstream has not de
 | `input`-keyed hook payload fallback | unreachable from any Claude Code hook event, widens the trigger surface (rtk-ai/rtk#2535) |
 | PowerShell matcher in `rtk init` | bash rewriter mangles PowerShell paths/aliases and bypasses its deny rules (rtk-ai/rtk#2075) |
 | `--` in the legacy `hooks/{claude,cursor}/rtk-rewrite.sh` | legacy-only, closed to further contributions (rtk-ai/rtk#2475) |
-| `status`/`log` machine-output passthrough (`46d16ea`, `da407dc`) | upstream already prints raw for every machine format but user `--pretty=format:`, which it truncates on purpose (rtk-ai/rtk#2573) |
 | Fork prettier filter reading stderr (fork PR #117) | upstream forwards the stderr report on its own stream (rtk-ai/rtk#3772); adopted rtk-ai/rtk#3571 for `rtk format` |
 
-Kept, as gaps upstream has not decided: the `status --porcelain` trailing newline (now leaving
-`-z` NUL-terminated output alone, see rtk-ai/rtk#3682 comment), the already-rtk deny path, the
-stdin-stall fail-open, and `--` in the hermes/pi plugins (upstream's hermes rewrite does not apply
-in Hermes at all yet, rtk-ai/rtk#3797).
+Kept, as gaps upstream has not decided: the already-rtk deny path, the stdin-stall fail-open,
+`--` in the hermes/pi plugins (upstream's hermes rewrite does not apply in Hermes at all yet,
+rtk-ai/rtk#3797), and the `status`/`log` machine-output passthrough (`46d16ea`, `da407dc`).
+
+The passthrough was dropped once on this branch and then reverted, so it is develop's
+behaviour, unchanged. Two upstream signals pull in different directions:
+
+- KuSh's close of rtk-ai/rtk#2573 lists the porcelain and `--pretty=format:` newlines as open
+  bugs ("an issue or a narrow PR ... would be welcome"). It also says `log --format=%H` already
+  prints what git prints, which holds only for short logs. On e4f0509, `log --format=%H` silently
+  stops at 50 commits, and `log -z --format=%H -5` comes back as 121 bytes of 205. Both cases are
+  now in `tests/git_machine_output_test.rs`.
+- KuSh's own open rtk-ai/rtk#4152 keeps user `--format`/`--pretty=format:` (and `-z`) on the
+  capped path and announces the cap. That is a direction, not yet a decision.
+
+**Trigger:** when rtk-ai/rtk#4152 merges, the cap is no longer silent, and the `log` half of the
+passthrough is a design difference. Take upstream's path then, and move the `log` cases out of the
+machine-output claim. The `status` half follows rtk-ai/rtk#3682. Without the passthrough, `status -z`
+reaches `with_trailing_newline`, which in #3682's form adds a stray newline after the last NUL
+(reported on the PR).

@@ -24,7 +24,7 @@ upstream chose on purpose. The fork dropped the latter in the alignment follow-u
 | 4 | `run_fallback` panics on a non-UTF-8 argument. | `args_os`; the child gets the original bytes. | **verified** (fork-proof claim) | rtk-ai/rtk#3224 |
 | 5 | A passing `cargo test` drops every compiler warning. | Keeps them, counts them. | **verified** (fork-proof claim) | rtk-ai/rtk#2877 |
 | 6 | An already-prefixed `rtk git push --force` escapes `Bash(git push:*)` deny rules. | Matches raw and rtk-stripped forms; the hook asserts the deny. | code difference; fork tests | rtk-ai/rtk#3195 |
-| 7 | `git status --porcelain` (v1 and v2) loses its final newline, so `wc -l` undercounts and `while read` drops the last entry. | Byte-identical to git. | **verified** on an e4f0509 build | rtk-ai/rtk#3682 — but see below |
+| 7 | `git status --porcelain` (v1 and v2) loses its final newline, so `wc -l` undercounts and `while read` drops the last entry. `git log --format=%H` silently stops at 50 commits; `git log -z --format=%H -5` comes back 121 bytes of 205. | Machine output passes through byte-identical. | **verified** on an e4f0509 build | porcelain: rtk-ai/rtk#3682, but see below. log: KuSh's rtk-ai/rtk#4152 keeps user formats capped and announces the cap. When it merges, the fork's log passthrough becomes a design difference and goes. |
 | 8 | `rtk format prettier --check` on a failing check prints "All files formatted correctly", exit 1. | Adopted rtk-ai/rtk#3571. | **verified** on an e4f0509 build | rtk-ai/rtk#3571 (KuSh's pick) |
 | 9 | `rtk <tool> ... --help` shows rtk's help, not the tool's. | Forwards it. | **verified** in fork tests | rtk-ai/rtk#4348 |
 | 10 | `rtk git diff` with `diff.external` may drop the driver's output. | Driver output reaches stdout. | **unverified** on upstream | rtk-ai/rtk#3607 |
@@ -32,8 +32,9 @@ upstream chose on purpose. The fork dropped the latter in the alignment follow-u
 **rtk-ai/rtk#3682 has a bug of its own.** Its `with_trailing_newline` also appends `\n` after
 `git status -z`'s final NUL, which `xargs -0` reads as an extra record. Reproduced on a build of
 the PR head (353fdb71); `e4f0509` prints git's bytes there, and the call site is unchanged on
-current `develop`. Commented on the PR with the repro and the one-line guard
-(`|| output.ends_with('\0')`) the fork ships.
+current `develop`. Commented on the PR with the repro and a one-line guard
+(`|| output.ends_with('\0')`). The fork doesn't need the guard: its passthrough sends
+`status -z` to the caller raw.
 
 ## Unverified, fork-only, low stakes
 
@@ -52,8 +53,6 @@ A/B both against an upstream build before considering them.
 - **`--` in the legacy shell-script hooks**: closed as legacy-only, no further contributions
   wanted (rtk-ai/rtk#2475). Upstream never carried `--` there; the earlier claim that `c6f484f`
   dropped it was wrong. Dropped.
-- **User `--pretty=format:` log output**: upstream sends it through `filter_log_output`'s line
-  truncation on purpose (rtk-ai/rtk#2573); every other machine format already passes raw. Dropped.
 - **Prettier report on stderr**: upstream forwards it on its own stream (rtk-ai/rtk#3772). The
   fork's combined-stream summary is gone; rtk-ai/rtk#3571 covers the `rtk format` case.
 - Also superseded: `read --max-lines` (upstream `--head-lines`), rg `-r` (rtk-ai/rtk#3681
@@ -70,10 +69,9 @@ A/B both against an upstream build before considering them.
 
 ## Fork-side weaknesses
 
-Fixed in the alignment follow-up: grammar residue in `is_rtk_prefixed`, the stale
-`GitCommand::user_args` doc and test, `detect_linter`'s checkout-touching tests, the hermes
-Windows fake's missing `--`, the `-z` stray newline, and the adopted prettier test's unisolated
-spawn.
+Fixed in the sync: grammar residue in `is_rtk_prefixed`. Fixed in the alignment follow-up: the
+stale `GitCommand::user_args` doc and test, `detect_linter`'s checkout-touching tests, the hermes
+Windows fake's missing `--`, and the adopted prettier test's unisolated spawn.
 
 Still open: the surviving argument scans (`requests_help`, `strip_jest_conflicting_args`)
 predate the now-mandatory `core::arg_tokenizer`. Upstream's reviewer would flag them on

@@ -10,7 +10,7 @@
 #   reduction  upstream passes output through unfiltered, the fork filters it
 #
 # test<TAB>class<TAB>claim
-machine_readable_git_output_is_byte_identical_to_native	fidelity	Upstream drops the final newline from `git status --porcelain` output (v1 and v2), so `| wc -l` undercounts and `while read` loops lose the last entry; the fork's machine-readable git output is byte-identical to git's.
+machine_readable_git_output_is_byte_identical_to_native	fidelity	Upstream mangles git output meant for programs: `git status --porcelain` loses its final newline (`| wc -l` undercounts), `git log --format=%H` stops at 50 commits, and `git log -z` records are cut at the line-width cap; the fork's machine-readable git output is byte-identical to git's.
 non_utf8_pattern_does_not_abort	fidelity	Upstream aborts (SIGABRT, exit 134) on any argument containing non-UTF-8 bytes, before the wrapped command runs; the fork executes it.
 non_utf8_pattern_forwards_original_bytes	fidelity	The wrapped tool receives the exact bytes the user typed, not a lossy copy.
 non_utf8_arg_to_missing_command_exits_cleanly	fidelity	A non-UTF-8 argument to a command that does not exist exits cleanly instead of aborting.
