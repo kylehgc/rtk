@@ -80,6 +80,7 @@ HEALED_SHAS=(
   7ead416 # 2026-10-09 upstream's PR 2717 maps 54936 to GB18030 already; utils.rs identical
   1d1d86b # 2026-10-09 upstream fixed the benchmark fixtures (ba7a9ce); scripts/benchmark.sh identical
   8a0d305 # 2026-10-09 same as 1d1d86b; its fixtures are gone
+  ab5d0f5 # 2026-10-09 reverted by afd4595 on the same branch; net zero (claudedocs/sync-conflict-2026-10-09.md)
   e93cde8 # 2026-10-09 withdrawn: omitting permissionDecision on Default/Ask rewrites is upstream's design (KuSh, upstream issue 3018); upstream closed its source PR 3031 as no longer applicable
 )
 

@@ -49,7 +49,7 @@ output *larger* and more correct. This fork does not claim to save more tokens t
 upstream — that is upstream's pitch. It claims to not lose your errors.
 
 <!-- FORK_DELTA_START -->
-**38 fixes in this fork that upstream does not have.** Each links to the commit,
+**37 fixes in this fork that upstream does not have.** Each links to the commit,
 where the original author is recorded. Adopted fixes come from community PRs that upstream
 has not merged — see the [adoption issues](https://github.com/kylehgc/rtk/issues?q=is%3Aissue+Adopt+upstream)
 for provenance.
@@ -62,7 +62,6 @@ upstream in another form.
 | Fix | Commit |
 |---|---|
 | fix(prettier): never report a failed run as formatted | [`3d27402f`](https://github.com/kylehgc/rtk/commit/3d27402f) |
-| fix(git): follow upstream on log formats, keep -z NUL-terminated | [`ab5d0f5b`](https://github.com/kylehgc/rtk/commit/ab5d0f5b) |
 | fix(cli): cover the help guards end to end, skip rtk's package-runner prefix, disable clap's help subcommand on wrapped parents | [`66f1cb71`](https://github.com/kylehgc/rtk/commit/66f1cb71) |
 | fix(cli): exempt rtk format from help forwarding, opt prisma parents out, tree -h is a size flag | [`2a4dc090`](https://github.com/kylehgc/rtk/commit/2a4dc090) |
 | fix(cli): keep clap's help on rtk's shell runners, treat -h as help where the tool does, route find --help verbatim | [`372cf482`](https://github.com/kylehgc/rtk/commit/372cf482) |
