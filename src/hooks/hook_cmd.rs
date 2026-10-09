@@ -676,21 +676,6 @@ enum PayloadAction {
     Ignore,
 }
 
-fn claude_payload_input(v: &Value) -> Option<(&Value, &str)> {
-    for key in ["tool_input", "input"] {
-        if let Some(input) = v.get(key)
-            && let Some(cmd) = input
-                .get("command")
-                .and_then(|c| c.as_str())
-                .filter(|c| !c.is_empty())
-        {
-            return Some((input, cmd));
-        }
-    }
-
-    None
-}
-
 /// True if any segment of `cmd` is already in `rtk …` form. Used to decide
 /// whether a Deny verdict is safe to leave to the host's own native
 /// permission check (works for the original, un-rewritten command text)
@@ -708,9 +693,7 @@ fn pre_tool_use_rewrite_output(
     rewritten: &str,
     permission_decision: Option<&str>,
 ) -> Value {
-    let mut updated_input = claude_payload_input(v)
-        .map(|(input, _)| input.clone())
-        .unwrap_or_else(|| json!({}));
+    let mut updated_input = v.get("tool_input").cloned().unwrap_or_else(|| json!({}));
     if let Some(obj) = updated_input.as_object_mut() {
         obj.insert("command".into(), Value::String(rewritten.to_string()));
     }
@@ -728,8 +711,12 @@ fn pre_tool_use_rewrite_output(
 }
 
 fn process_claude_payload(v: &Value) -> PayloadAction {
-    let cmd = match claude_payload_input(v) {
-        Some((_, cmd)) => cmd,
+    let cmd = match v
+        .pointer("/tool_input/command")
+        .and_then(|c| c.as_str())
+        .filter(|c| !c.is_empty())
+    {
+        Some(c) => c,
         None => return PayloadAction::Ignore,
     };
 
@@ -777,19 +764,9 @@ fn process_claude_payload_from_decision(
         HookDecision::AskRewrite(r) => (r, false),
     };
 
-    // An Ask verdict is asserted as "ask" so the host prompts for the rewritten
-    // command, except under bypassPermissions, where the user opted out of prompts.
-    let permission_decision = if allow {
-        Some("allow")
-    } else if v.get("permission_mode").and_then(Value::as_str) != Some("bypassPermissions") {
-        Some("ask")
-    } else {
-        None
-    };
-
     PayloadAction::Rewrite {
         cmd: cmd.to_string(),
-        output: pre_tool_use_rewrite_output(v, &rewritten, permission_decision),
+        output: pre_tool_use_rewrite_output(v, &rewritten, allow.then_some("allow")),
         rewritten,
         decision: if allow {
             HookOutcome::Allow
@@ -1954,18 +1931,6 @@ mod tests {
         .to_string()
     }
 
-    fn claude_current_input_with_fields(cmd: &str, timeout: u64, description: &str) -> String {
-        json!({
-            "tool": "Bash",
-            "input": {
-                "command": cmd,
-                "timeout": timeout,
-                "description": description
-            }
-        })
-        .to_string()
-    }
-
     /// Matches the real PreToolUse payload shape captured from a live Claude Code
     /// session (verified fields: session_id, transcript_path, cwd, tool_use_id).
     fn claude_payload_with_ids(cmd: &str, session_id: &str, tool_use_id: &str, cwd: &str) -> Value {
@@ -2122,35 +2087,6 @@ mod tests {
     }
 
     #[test]
-    fn test_claude_rewrite_accepts_current_tool_input_keys() {
-        let input = claude_current_input_with_fields("grep -r hello .", 30000, "Search repo");
-        let result = run_claude_inner(&input).unwrap();
-        let v: Value = serde_json::from_str(&result).unwrap();
-        let updated = &v["hookSpecificOutput"]["updatedInput"];
-        assert_eq!(updated["command"], "rtk grep -r hello .");
-        assert_eq!(updated["timeout"], 30000);
-        assert_eq!(updated["description"], "Search repo");
-    }
-
-    #[test]
-    fn test_claude_tool_input_wins_over_input_when_both_present() {
-        // Precedence is load-bearing: the selected object is both gated and
-        // echoed back as updatedInput, so legacy `tool_input` must win.
-        let input = json!({
-            "tool_name": "Bash",
-            "tool_input": { "command": "git status" },
-            "input": { "command": "git log" }
-        })
-        .to_string();
-        let result = run_claude_inner(&input).expect("rewrite expected");
-        let v: Value = serde_json::from_str(&result).expect("valid hook JSON");
-        assert_eq!(
-            v["hookSpecificOutput"]["updatedInput"]["command"],
-            "rtk git status"
-        );
-    }
-
-    #[test]
     fn test_claude_passthrough_no_output() {
         assert!(run_claude_inner(&claude_input("htop")).is_none());
     }
@@ -2294,26 +2230,11 @@ mod tests {
         let hook = &v["hookSpecificOutput"];
 
         assert_eq!(hook["hookEventName"], PRE_TOOL_USE_KEY);
-        assert_eq!(hook["permissionDecision"], "ask");
+        // permissionDecision is only set when an explicit allow rule matches;
+        // with default-to-ask semantics (no rules configured), it is absent.
         assert_eq!(hook["permissionDecisionReason"], "RTK auto-rewrite");
         assert!(hook["updatedInput"].is_object());
         assert!(hook["updatedInput"]["command"].is_string());
-    }
-
-    #[test]
-    fn test_claude_bypass_ask_omits_permission_decision() {
-        let input = json!({
-            "permission_mode": "bypassPermissions",
-            "tool_name": "Bash",
-            "tool_input": { "command": "git status" }
-        })
-        .to_string();
-        let result = run_claude_inner(&input).unwrap();
-        let v: Value = serde_json::from_str(&result).unwrap();
-        let hook = &v["hookSpecificOutput"];
-
-        assert!(hook.get("permissionDecision").is_none());
-        assert_eq!(hook["updatedInput"]["command"], "rtk git status");
     }
 
     #[test]
