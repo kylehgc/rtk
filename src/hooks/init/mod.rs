@@ -42,8 +42,8 @@ mod vibe;
 // from here and is imported by name.
 use agents_md::*;
 use claude::{
-    CLAUDE_HOOK_MATCHERS, hook_already_present, missing_hook_matchers, remove_hook_from_settings,
-    run_claude_md_mode, run_default_mode, run_hook_only_mode,
+    hook_already_present, remove_hook_from_settings, run_claude_md_mode, run_default_mode,
+    run_hook_only_mode,
 };
 use codex::{run_codex_mode, show_codex_config, uninstall_codex};
 use cursor::{
@@ -815,23 +815,12 @@ pub(super) fn print_manual_instructions(hook_command: &str, include_opencode: bo
         .join(SETTINGS_JSON);
     println!("\n  MANUAL STEP: Add this to {}:", settings_path.display());
     println!("  {{");
-    println!("    \"hooks\": {{ \"PreToolUse\": [");
-    // Driven off CLAUDE_HOOK_MATCHERS so the manual instructions can't drift
-    // from what insert_hook_entry actually writes.
-    for (i, matcher) in CLAUDE_HOOK_MATCHERS.iter().enumerate() {
-        let comma = if i + 1 < CLAUDE_HOOK_MATCHERS.len() {
-            ","
-        } else {
-            ""
-        };
-        println!("      {{");
-        println!("        \"matcher\": \"{}\",", matcher);
-        println!("        \"hooks\": [{{ \"type\": \"command\",");
-        println!("          \"command\": \"{}\"", hook_command);
-        println!("        }}]");
-        println!("      }}{}", comma);
-    }
-    println!("    ]}}");
+    println!("    \"hooks\": {{ \"PreToolUse\": [{{");
+    println!("      \"matcher\": \"Bash\",");
+    println!("      \"hooks\": [{{ \"type\": \"command\",");
+    println!("        \"command\": \"{}\"", hook_command);
+    println!("      }}]");
+    println!("    }}]}}");
     println!("  }}");
     if include_opencode {
         println!("\n  Then restart Claude Code and OpenCode. Test with: git status\n");
@@ -1578,17 +1567,8 @@ fn show_claude_config() -> Result<()> {
         let content = strip_leading_bom(&content);
         if !content.trim().is_empty() {
             if let Ok(root) = from_json_str::<serde_json::Value>(content) {
-                let missing = missing_hook_matchers(&root, CLAUDE_HOOK_COMMAND);
-                if missing.is_empty() {
+                if hook_already_present(&root, CLAUDE_HOOK_COMMAND) {
                     println!("[ok] settings.json: RTK hook configured");
-                } else if hook_already_present(&root, CLAUDE_HOOK_COMMAND) {
-                    // Registered, but not for every matcher — an install from an
-                    // older rtk has Bash only, so Windows PowerShell calls miss it.
-                    println!(
-                        "[warn] settings.json: RTK hook configured, missing matcher: {}",
-                        missing.join(", ")
-                    );
-                    println!("    Run: rtk init -g --auto-patch");
                 } else {
                     println!("[warn] settings.json: exists but RTK hook not configured");
                     println!("    Run: rtk init -g --auto-patch");
