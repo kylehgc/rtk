@@ -65,6 +65,23 @@ HEALED_SHAS=(
   653fb56 # 2026-10-09 superseded by upstream's --head-lines window: `head -N` rewrites there, --max-lines stays smart_truncate (claudedocs/sync-conflict-2026-10-09.md)
   00d8ee4 # 2026-10-09 superseded by upstream PR #3681 arg_tokenizer, which parses rg's -r as --replace; upstream closed #3162 for it (claudedocs/sync-conflict-2026-10-09.md)
   d43cef5 # 2026-10-09 amendment to 00d8ee4, removed with it (claudedocs/sync-conflict-2026-10-09.md)
+  7db14a3 # 2026-10-09 declined upstream: the `--` in the legacy shell hooks; aeppling and KuSh closed upstream issue 1350 as legacy-only (native `rtk hook` is current). Upstream never carried it, so the 2026-08-05 note here ("merged ... byte-identical") was wrong; scripts restored to upstream's
+  c8d6e28 # 2026-10-09 withdrawn: Claude `input`-key fallback; KuSh on upstream PR 2535: no Claude Code hook event sends it, and it widens the trigger surface
+  cc5b6d3 # 2026-10-09 withdrawn: PowerShell Claude matcher; KuSh on upstream PR 2075: it runs PowerShell through the bash rewriter (mangles `\` paths, takes over ls/ps/curl aliases, ignores PowerShell-scoped deny rules). init/ restored to upstream's
+  34946b7 # 2026-10-09 superseded by the re-adoption of the same author's current upstream PR 3571 (aa5f31e), which keeps stderr on its own stream after upstream PR 3772
+  6f4d9f7 # 2026-10-09 amendment to 34946b7, removed with it (upstream PR 3571 strips the [warn] prefix itself)
+  59f2564 # 2026-10-09 amendment to 34946b7, removed with it (upstream PR 3571 covers the rtk format call site itself)
+  12db983 # 2026-10-09 upstream merged PR 3772; runner.rs matches upstream apart from help forwarding (verified against e4f0509)
+  c27bbd0 # 2026-10-09 failure-only stderr forward, removed by 9ed2e49 in favour of upstream PR 3772; tests/stderr_passthrough_test.rs stays as a regression guard
+  9ed2e49 # 2026-10-09 the removal of c27bbd0's forward; nothing of it remains to differ
+  0704f58 # 2026-10-09 upstream merged PR 2628; only clap help tests remain in main.rs (verified against e4f0509)
+  fa55089 # 2026-10-09 upstream merged PR 3199; mvn_cmd.rs and the jvm README are identical to upstream's
+  13cf995 # 2026-10-09 upstream merged PR 2717; utils.rs, Cargo.toml and Cargo.lock identical, stream.rs differs only by help forwarding
+  7ead416 # 2026-10-09 upstream's PR 2717 maps 54936 to GB18030 already; utils.rs identical
+  1d1d86b # 2026-10-09 upstream fixed the benchmark fixtures (ba7a9ce); scripts/benchmark.sh identical
+  8a0d305 # 2026-10-09 same as 1d1d86b; its fixtures are gone
+  ab5d0f5 # 2026-10-09 reverted by afd4595 on the same branch; net zero (claudedocs/sync-conflict-2026-10-09.md)
+  e93cde8 # 2026-10-09 withdrawn: omitting permissionDecision on Default/Ask rewrites is upstream's design (KuSh, upstream issue 3018); upstream closed its source PR 3031 as no longer applicable
 )
 
 # ponytail: patch-id scan bounded to upstream commits since UPSTREAM_SINCE.

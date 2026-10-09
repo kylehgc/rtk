@@ -3,7 +3,7 @@
 use crate::core::runner::{self, RunOptions};
 use crate::core::shell::display_args;
 use crate::core::truncate::CAP_WARNINGS;
-use crate::core::utils::{package_manager_exec, strip_ansi};
+use crate::core::utils::package_manager_exec;
 use anyhow::Result;
 
 pub fn run(args: &[String], verbose: u8) -> Result<i32> {
@@ -17,15 +17,15 @@ pub fn run(args: &[String], verbose: u8) -> Result<i32> {
         eprintln!("Running: prettier {}", args.join(" "));
     }
 
-    // Prettier >= 1.19 logs its `--check` results ("[warn] <file>") to stderr,
-    // not stdout — the filter must see the combined output, and the exit code,
-    // to avoid reporting a failing check as success.
+    // Prettier >= 1.19 reports a failing `--check` ("[warn] <file>") on stderr, which
+    // stdout-only forwards untouched. The exit code lets the filter refuse to call a
+    // failed run formatted.
     runner::run_filtered_with_exit(
         cmd,
         "prettier",
         &display_args(args),
         filter_prettier_output_with_exit,
-        RunOptions::default(),
+        RunOptions::stdout_only(),
     )
 }
 
@@ -34,20 +34,12 @@ pub fn filter_prettier_output(output: &str) -> String {
     filter_prettier_output_with_exit(output, 0)
 }
 
-pub(crate) fn filter_prettier_output_with_exit(output: &str, exit_code: i32) -> String {
-    // Prettier colors the "[warn]" marker even when piped, so the prefix
-    // match below must see the literal marker, not "[\x1b[33mwarn\x1b[39m]".
-    let output = &strip_ansi(output);
+/// Same as [`filter_prettier_output`], for a caller that knows how the run ended.
+pub fn filter_prettier_output_with_exit(output: &str, exit_code: i32) -> String {
     // #221: empty or whitespace-only output means prettier didn't run
     if output.trim().is_empty() {
         return "Error: prettier produced no output".to_string();
     }
-
-    // One invariant: a run that signals failure never yields the success
-    // line. Non-zero exit covers callers that have an exit code; prettier's
-    // own "Code style issues found" verdict covers callers that don't
-    // (pipe mode, where the filter sees only text).
-    let failed = exit_code != 0 || output.contains("Code style issues found");
 
     let mut files_to_format: Vec<String> = Vec::new();
     let mut files_checked = 0;
@@ -95,8 +87,15 @@ pub(crate) fn filter_prettier_output_with_exit(output: &str, exit_code: i32) -> 
         }
     }
 
+    // No file list to report, yet prettier failed (syntax error, no matching files,
+    // an extension this filter does not know): there is nothing true to summarise, so
+    // never present it as formatted and show what prettier said.
+    if files_to_format.is_empty() && exit_code != 0 {
+        return output.trim().to_string();
+    }
+
     // Check if all files are formatted
-    if !failed && files_to_format.is_empty() && output.contains("All matched files use Prettier") {
+    if files_to_format.is_empty() && output.contains("All matched files use Prettier") {
         return "Prettier: All files formatted correctly".to_string();
     }
 
@@ -110,12 +109,6 @@ pub(crate) fn filter_prettier_output_with_exit(output: &str, exit_code: i32) -> 
     if is_check_mode {
         // Check mode: show files that need formatting
         if files_to_format.is_empty() {
-            if failed {
-                // Prettier failed but no file list could be parsed (unknown
-                // extension, unexpected output shape). Never claim success on
-                // a failing check — pass the real output through.
-                return output.trim().to_string();
-            }
             result.push_str("Prettier: All files formatted correctly\n");
         } else {
             result.push_str(&format!(
@@ -247,76 +240,37 @@ Code style issues found in the above file(s). Forgot to run Prettier?
     }
 
     #[test]
+    fn test_filter_syntax_error_run_is_not_success() {
+        // stdout of a --check that hit a syntax error (exit 2): no file list at all.
+        let output = "Checking formatting...\n\
+                      Error occurred when checking code style in the above file.";
+        let result = filter_prettier_output_with_exit(output, 2);
+        assert!(
+            !result.contains("All files formatted correctly"),
+            "failed run reported as success: {}",
+            result
+        );
+        assert!(result.contains("Error occurred when checking code style"));
+    }
+
+    #[test]
+    fn test_filter_failed_run_that_prints_the_success_line_is_not_success() {
+        // "No files matching the pattern" exits 2, yet prettier still prints its
+        // success line on stdout. The exit code wins.
+        let output = "Checking formatting...\nAll matched files use Prettier code style!";
+        let result = filter_prettier_output_with_exit(output, 2);
+        assert!(
+            !result.contains("All files formatted correctly"),
+            "failed run reported as success: {}",
+            result
+        );
+        assert!(result.contains("All matched files use Prettier"));
+    }
+
+    #[test]
     fn test_filter_check_success_exit_zero_unchanged() {
         let output = "Checking formatting...\nAll matched files use Prettier code style!";
         let result = filter_prettier_output_with_exit(output, 0);
         assert!(result.contains("All files formatted correctly"));
-    }
-
-    #[test]
-    fn test_filter_check_failure_textual_verdict_no_exit_code() {
-        // Pipe/format callers may have no exit code to give, but prettier's
-        // own "Code style issues found" verdict still marks the run failing.
-        let output = "Checking formatting...\n\
-                      [warn] src/component.vue\n\
-                      [warn] Code style issues found in the above file. Run Prettier with --write to fix.";
-        let result = filter_prettier_output(output);
-        assert!(
-            !result.contains("All files formatted correctly"),
-            "failing check reported as success: {}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_filter_check_failure_stray_success_summary() {
-        // Non-zero exit wins over a success summary line in the output.
-        let output = "Checking formatting...\nAll matched files use Prettier code style!";
-        let result = filter_prettier_output_with_exit(output, 1);
-        assert!(
-            !result.contains("All files formatted correctly"),
-            "failing check reported as success: {}",
-            result
-        );
-    }
-
-    fn count_tokens(s: &str) -> usize {
-        s.split_whitespace().count()
-    }
-
-    #[test]
-    fn test_filter_check_savings_over_60_percent() {
-        let mut output = String::from("Checking formatting...\n");
-        for i in 0..100 {
-            output.push_str(&format!("[warn] src/components/file{}.ts\n", i));
-        }
-        output.push_str(
-            "[warn] Code style issues found in the above files. Run Prettier with --write to fix.",
-        );
-        let filtered = filter_prettier_output_with_exit(&output, 1);
-        let (input, kept) = (count_tokens(&output), count_tokens(&filtered));
-        assert!(
-            kept * 100 <= input * 40,
-            "savings below 60%: {} -> {} tokens",
-            input,
-            kept
-        );
-    }
-
-    #[test]
-    fn test_filter_check_failure_ansi_colored_warn() {
-        // Real prettier 3.x output captured through rtk's pipes on Windows:
-        // the [warn] marker keeps its ANSI color codes even when not a TTY.
-        let output = "Checking formatting...\n\
-                      [\u{1b}[33mwarn\u{1b}[39m] bad.js\n\
-                      [\u{1b}[33mwarn\u{1b}[39m] Code style issues found in the above file. Run Prettier with --write to fix.";
-        let result = filter_prettier_output_with_exit(output, 1);
-        assert!(
-            result.contains("1 files need formatting"),
-            "got: {}",
-            result
-        );
-        assert!(result.contains("bad.js"));
-        assert!(!result.contains("All files formatted correctly"));
     }
 }

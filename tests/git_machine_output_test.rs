@@ -57,6 +57,12 @@ fn machine_readable_git_output_is_byte_identical_to_native() {
         &["log", "--format=%H", "-3"],
         &["log", "--pretty=format:%H", "-3"],
         &["log", "-z", "--name-only", "-3"],
+        // NUL-joined records are one "line" to a line filter: five hashes are
+        // 205 bytes, past its width cap.
+        &["log", "-z", "--format=%H", "-5"],
+        // No count: a filter that caps the log stops at its own limit, and the
+        // consumer silently gets fewer commits than git has.
+        &["log", "--format=%H"],
         &["diff", "--name-only", "HEAD~1..HEAD"],
         &["diff", "--name-status", "HEAD~1..HEAD"],
         &["diff", "--numstat", "HEAD~1..HEAD"],

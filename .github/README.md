@@ -42,13 +42,14 @@ with their original authorship intact, and adds its own where a bug has no fix p
 Fixes authored here are submitted back upstream — the goal is for this list to shrink.
 
 Most of what this fork fixes is **fidelity**, not compression. Upstream sometimes filters
-away information the agent actually needed: compiler warnings, failing-test stderr,
-`--porcelain` output that was never meant to be human-readable. Those fixes make rtk's
+away information the agent actually needed: compiler warnings on a passing `cargo test`,
+the error output of a failed `pnpm install`, the final newline of `git status --porcelain` that `wc -l` and `while read` count on.
+Those fixes make rtk's
 output *larger* and more correct. This fork does not claim to save more tokens than
 upstream — that is upstream's pitch. It claims to not lose your errors.
 
 <!-- FORK_DELTA_START -->
-**51 fixes in this fork that upstream does not have.** Each links to the commit,
+**37 fixes in this fork that upstream does not have.** Each links to the commit,
 where the original author is recorded. Adopted fixes come from community PRs that upstream
 has not merged — see the [adoption issues](https://github.com/kylehgc/rtk/issues?q=is%3Aissue+Adopt+upstream)
 for provenance.
@@ -60,6 +61,7 @@ upstream in another form.
 
 | Fix | Commit |
 |---|---|
+| fix(prettier): never report a failed run as formatted | [`3d27402f`](https://github.com/kylehgc/rtk/commit/3d27402f) |
 | fix(cli): cover the help guards end to end, skip rtk's package-runner prefix, disable clap's help subcommand on wrapped parents | [`66f1cb71`](https://github.com/kylehgc/rtk/commit/66f1cb71) |
 | fix(cli): exempt rtk format from help forwarding, opt prisma parents out, tree -h is a size flag | [`2a4dc090`](https://github.com/kylehgc/rtk/commit/2a4dc090) |
 | fix(cli): keep clap's help on rtk's shell runners, treat -h as help where the tool does, route find --help verbatim | [`372cf482`](https://github.com/kylehgc/rtk/commit/372cf482) |
@@ -68,7 +70,6 @@ upstream in another form.
 | fix(cli): hand --help/-h to the wrapped tool on every forwarding subcommand | [`beb45c20`](https://github.com/kylehgc/rtk/commit/beb45c20) |
 | fix(tsc): preserve informational output | [`bb0a9c8c`](https://github.com/kylehgc/rtk/commit/bb0a9c8c) |
 | fix(git): keep the trailing newline on filtered 'git status' output | [`d536891a`](https://github.com/kylehgc/rtk/commit/d536891a) |
-| fix(runner): drop the failure-only stderr forward superseded by #3772 | [`9ed2e49c`](https://github.com/kylehgc/rtk/commit/9ed2e49c) |
 | fix(git): fall back to raw text when compact_diff gets non-unified input | [`c8e7a8bf`](https://github.com/kylehgc/rtk/commit/c8e7a8bf) |
 | fix(jest): equals-form --reporters is greedy too; respect -- terminator | [`f0f34aff`](https://github.com/kylehgc/rtk/commit/f0f34aff) |
 | fix(jest): consume the values of a space-separated --reporters flag | [`b4aceb61`](https://github.com/kylehgc/rtk/commit/b4aceb61) |
@@ -80,37 +81,23 @@ upstream in another form.
 | fix(lint): guard known linter names from the on-disk path check, bound failure passthrough | [`32400756`](https://github.com/kylehgc/rtk/commit/32400756) |
 | fix(hook): delegate lint scripts to package managers | [`cae0f218`](https://github.com/kylehgc/rtk/commit/cae0f218) |
 | fix(lint): stop reading a bare path as a linter name | [`617ef8e1`](https://github.com/kylehgc/rtk/commit/617ef8e1) |
-| fix(prettier): enforce the failure invariant at every call site | [`59f2564c`](https://github.com/kylehgc/rtk/commit/59f2564c) |
-| fix(prettier): strip ANSI before parsing [warn] markers | [`6f4d9f73`](https://github.com/kylehgc/rtk/commit/6f4d9f73) |
-| fix(prettier): read check results from stderr, never report a failing check as success | [`34946b76`](https://github.com/kylehgc/rtk/commit/34946b76) |
 | fix(rewrite): never rewrite yadm to rtk git; keep bare git add a no-op | [`1d672725`](https://github.com/kylehgc/rtk/commit/1d672725) |
 | fix(hook): make gemini runner fail open on empty stdin | [`cf976dfb`](https://github.com/kylehgc/rtk/commit/cf976dfb) |
 | fix(hook): fail open when stdin payload stalls | [`04f881a1`](https://github.com/kylehgc/rtk/commit/04f881a1) |
-| fix(grep): stop -l/-m/-t shadowing native grep flags | [`0704f581`](https://github.com/kylehgc/rtk/commit/0704f581) |
 | fix(js): preserve failed command output in parser fallbacks | [`723bea40`](https://github.com/kylehgc/rtk/commit/723bea40) |
 | fix(proof): enforce tool-required guards inside the script itself | [`6fb87aa9`](https://github.com/kylehgc/rtk/commit/6fb87aa9) |
 | fix(release): make the version stamp work on macOS and RPM | [`79f2dd91`](https://github.com/kylehgc/rtk/commit/79f2dd91) |
 | fix(release): stamp Cargo.toml's version from the release tag | [`0a876c85`](https://github.com/kylehgc/rtk/commit/0a876c85) |
 | fix(cd): compute the first fork RC without a tag that does not exist | [`1696cda1`](https://github.com/kylehgc/rtk/commit/1696cda1) |
-| fix(bench): serve curl/wget fixtures over local HTTP, not file:// | [`1d1d86bd`](https://github.com/kylehgc/rtk/commit/1d1d86bd) |
-| fix(bench): pin the curl fixtures instead of fetching a random payload | [`8a0d305b`](https://github.com/kylehgc/rtk/commit/8a0d305b) |
 | fix(cargo): stop the raw-tail fallback restating captured warnings | [`f954b615`](https://github.com/kylehgc/rtk/commit/f954b615) |
 | fix(cargo): keep compile errors visible when warnings are captured | [`6235d4b9`](https://github.com/kylehgc/rtk/commit/6235d4b9) |
 | fix(cargo): preserve compiler warnings in cargo test output on passing runs | [`ff139867`](https://github.com/kylehgc/rtk/commit/ff139867) |
 | fix(git): correct the machine-output flag set and stop diluting gain stats | [`da407dc3`](https://github.com/kylehgc/rtk/commit/da407dc3) |
 | fix(git): keep machine output raw | [`46d16ead`](https://github.com/kylehgc/rtk/commit/46d16ead) |
-| fix(hook): accept current Claude tool input keys | [`c8d6e280`](https://github.com/kylehgc/rtk/commit/c8d6e280) |
-| feat(init): add PowerShell hook for Claude Code on Windows | [`cc5b6d3f`](https://github.com/kylehgc/rtk/commit/cc5b6d3f) |
-| feat(mvn): add rtk mvnd support for Maven Daemon | [`fa550896`](https://github.com/kylehgc/rtk/commit/fa550896) |
 | fix(pnpm): preserve install failure output | [`2bbe81fd`](https://github.com/kylehgc/rtk/commit/2bbe81fd) |
 | fix(hook): hook warning repeats on every command on Windows | [`8945b96b`](https://github.com/kylehgc/rtk/commit/8945b96b) |
 | fix(hooks): add -- terminator to hermes, opencode, and pi rewrite callers | [`82534016`](https://github.com/kylehgc/rtk/commit/82534016) |
-| fix(hook): prevent flag injection in rtk-rewrite hooks (#1350) | [`7db14a39`](https://github.com/kylehgc/rtk/commit/7db14a39) |
 | fix(cli): handle non-UTF-8 argv in raw-execution fallback | [`22990e91`](https://github.com/kylehgc/rtk/commit/22990e91) |
-| fix(runner): surface a failing tool's stderr under stdout-only filtering | [`c27bbd05`](https://github.com/kylehgc/rtk/commit/c27bbd05) |
-| fix(core): map code page 54936 to GB18030 instead of GBK | [`7ead4165`](https://github.com/kylehgc/rtk/commit/7ead4165) |
-| fix(core): decode process output using Windows console code page | [`13cf9951`](https://github.com/kylehgc/rtk/commit/13cf9951) |
-| fix(hook): emit ask decision for Claude rewrites | [`e93cde81`](https://github.com/kylehgc/rtk/commit/e93cde81) |
 
 <!-- FORK_DELTA_END -->
 

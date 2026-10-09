@@ -6,6 +6,7 @@ use crate::core::shell::{display_args, quote_program, with_args};
 use crate::core::stream::exec_capture;
 use crate::core::tracking;
 use crate::core::truncate::{CAP_ERRORS, CAP_WARNINGS};
+use crate::core::user_dirs;
 use crate::core::utils::{MissingTool, resolved_command, tool_exec, truncate};
 use crate::mypy_cmd;
 use crate::ruff_cmd;
@@ -106,7 +107,7 @@ fn detect_linter(args: &[String]) -> (&str, bool) {
     let known_linter = !args.is_empty()
         && (is_python_linter(&args[0]) || matches!(args[0].as_str(), "eslint" | "biome"));
 
-    if is_path_or_flag || (!known_linter && std::path::Path::new(&args[0]).exists()) {
+    if is_path_or_flag || (!known_linter && user_dirs::in_working_dir(&args[0]).exists()) {
         ("eslint", false)
     } else {
         (&args[0], true)
@@ -564,6 +565,7 @@ fn compact_path(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::test_isolation;
 
     #[test]
     fn test_filter_eslint_json() {
@@ -759,10 +761,9 @@ mod tests {
     /// first argument is a path. Taking it for a linter ran `npx -- src`.
     #[test]
     fn detect_linter_treats_an_existing_directory_as_a_path() {
-        // Cargo runs unit tests from the crate root, where `src` exists.
-        // Reading the real cwd keeps this test free of any global mutation,
-        // which set_current_dir would impose on every test running alongside.
-        assert!(std::path::Path::new("src").is_dir(), "test precondition");
+        let project = test_isolation::tempdir();
+        std::fs::create_dir(project.path().join("src")).expect("create src dir");
+        let _entered = test_isolation::enter(project.path());
 
         let args: Vec<String> = vec!["src".into()];
         let (linter, explicit) = detect_linter(&args);
@@ -784,22 +785,15 @@ mod tests {
     /// must not reroute an explicit invocation through ESLint.
     #[test]
     fn detect_linter_keeps_known_linter_name_even_when_it_exists_on_disk() {
-        let dir = std::path::Path::new("biome");
-        let created = !dir.exists();
-        if created {
-            std::fs::create_dir(dir).expect("create biome dir");
-        }
+        let project = test_isolation::tempdir();
+        std::fs::create_dir(project.path().join("biome")).expect("create biome dir");
+        let _entered = test_isolation::enter(project.path());
 
         let args: Vec<String> = vec!["biome".into(), "check".into()];
         let (linter, explicit) = detect_linter(&args);
-        let result = (linter.to_string(), explicit);
 
-        if created {
-            std::fs::remove_dir(dir).expect("remove biome dir");
-        }
-
-        assert_eq!(result.0, "biome");
-        assert!(result.1);
+        assert_eq!(linter, "biome");
+        assert!(explicit);
     }
 
     /// Regression: pnpm reports a missing command without the word "error",

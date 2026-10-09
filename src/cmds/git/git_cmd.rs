@@ -54,11 +54,10 @@ impl GitCommand {
         }
     }
 
-    /// Everything the user typed after the subcommand, in order. `Stash`
-    /// parses its first operand into its own positional, so it is put back
-    /// in front of `args`: `restore_double_dash` measures the user region by
-    /// length, and a `--` before that operand (`git stash -- -h`) would
-    /// otherwise be lost.
+    /// Everything the user typed after the subcommand, in order. `run` splits
+    /// a `Stash` region into its leading positional and the rest; the help
+    /// passthrough rebuilds git's argv from this, so the positional goes back
+    /// in front (`git stash list -h` must reach git as `stash list -h`).
     fn user_args(&self, args: &[String]) -> Vec<String> {
         match self {
             GitCommand::Stash {
@@ -3849,26 +3848,19 @@ mod tests {
     }
 
     #[test]
-    fn test_stash_operand_rejoins_the_user_region_before_restoring_double_dash() {
+    fn test_stash_help_passthrough_keeps_the_subcommand() {
         let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        // `rtk git stash -- -h`: clap put `-h` in `subcommand`, args is empty.
-        let cmd = GitCommand::Stash {
-            subcommand: Some("-h".to_string()),
-        };
-        let raw = a(&["rtk", "git", "stash", "--", "-h"]);
-        let restored = args_utils::restore_double_dash_with_raw(&cmd.user_args(&[]), &raw);
-        assert_eq!(restored, a(&["--", "-h"]));
-        assert!(!requests_help(&restored), "`-- -h` is an operand, not help");
-        // Without the operand the region is one short and the `--` is lost.
-        assert_eq!(
-            args_utils::restore_double_dash_with_raw(&[], &raw),
-            a(&["-h"])
-        );
-        // `rtk git stash list -h` still asks for usage.
-        let cmd = GitCommand::Stash {
-            subcommand: Some("list".to_string()),
-        };
-        assert!(requests_help(&cmd.user_args(&a(&["-h"]))));
+        // `run` splits the restored stash region; the help passthrough needs
+        // the subcommand back in front, in order.
+        let (subcommand, rest) = split_stash_region(&a(&["list", "-h"]));
+        let user = GitCommand::Stash { subcommand }.user_args(&rest);
+        assert_eq!(user, a(&["list", "-h"]));
+        assert!(requests_help(&user));
+        // `rtk git stash -- -h`: after `--`, `-h` is an operand, not help.
+        let (subcommand, rest) = split_stash_region(&a(&["--", "-h"]));
+        let user = GitCommand::Stash { subcommand }.user_args(&rest);
+        assert_eq!(user, a(&["--", "-h"]));
+        assert!(!requests_help(&user), "`-- -h` is an operand, not help");
     }
 
     #[test]
