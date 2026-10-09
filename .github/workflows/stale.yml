@@ -16,6 +16,10 @@ permissions: {}
 
 jobs:
   stale:
+    # Fork Infrastructure (see CONTEXT.md). The stale policy is upstream's, for upstream's
+    # backlog, and needs upstream's App secrets: on this fork the token step failed every
+    # week. Falling back to GITHUB_TOKEN would instead start closing fork issues and PRs.
+    if: github.repository == 'rtk-ai/rtk'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
