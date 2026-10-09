@@ -1,9 +1,10 @@
 //! `rtk git` must hand machine-readable formats back byte-for-byte.
 //!
-//! The defect this guards lives in the print path: a status line joined without
-//! its final newline still reads right, but `| wc -l` undercounts and `while read`
-//! loops drop the last entry, and a stray `\n` after `-z`'s final NUL is a byte
-//! `xargs -0` consumers see. Unit tests on the filters cannot see either.
+//! The unit tests in `src/cmds/git/git.rs` only cover the flag predicates —
+//! whether an arg list *counts* as machine output. They cannot catch the actual
+//! defect this guards, which lives in the print path: swapping `print!` back to
+//! `println!("{}", stdout.trim())` still satisfies every predicate test while
+//! silently dropping the trailing newline and breaking `while read` loops.
 //!
 //! So these run the real binary against real git and compare bytes.
 
@@ -49,13 +50,12 @@ fn machine_readable_git_output_is_byte_identical_to_native() {
     }
 
     // Each case must survive rtk untouched — same bytes, trailing newline included.
-    // `--pretty=format:` is not here: upstream deliberately runs user log formats
-    // through its line-truncating filter, and this fork follows that design.
     let cases: &[&[&str]] = &[
         &["status", "--porcelain"],
         &["status", "--porcelain=v2"],
         &["status", "-z"],
         &["log", "--format=%H", "-3"],
+        &["log", "--pretty=format:%H", "-3"],
         &["log", "-z", "--name-only", "-3"],
         &["diff", "--name-only", "HEAD~1..HEAD"],
         &["diff", "--name-status", "HEAD~1..HEAD"],

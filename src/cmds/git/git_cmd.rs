@@ -54,10 +54,11 @@ impl GitCommand {
         }
     }
 
-    /// Everything the user typed after the subcommand, in order. `run` splits
-    /// a `Stash` region into its leading positional and the rest; the help
-    /// passthrough rebuilds git's argv from this, so the positional goes back
-    /// in front (`git stash list -h` must reach git as `stash list -h`).
+    /// Everything the user typed after the subcommand, in order. `Stash`
+    /// parses its first operand into its own positional, so it is put back
+    /// in front of `args`: `restore_double_dash` measures the user region by
+    /// length, and a `--` before that operand (`git stash -- -h`) would
+    /// otherwise be lost.
     fn user_args(&self, args: &[String]) -> Vec<String> {
         match self {
             GitCommand::Stash {
@@ -141,6 +142,28 @@ fn uses_compact_status_path(args: &[String]) -> bool {
     }
 
     saw_branch || !saw_flag
+}
+
+fn status_args_request_machine_output(args: &[String]) -> bool {
+    args.iter()
+        .any(|arg| arg == "-z" || arg == "--porcelain" || arg.starts_with("--porcelain="))
+}
+
+fn log_args_request_machine_output(args: &[String]) -> bool {
+    args.iter().enumerate().any(|(idx, arg)| {
+        // `-z` NUL-delimits records for programmatic consumers, independently of
+        // any --format/--pretty flag: `git log -z --name-only` is machine output
+        // with no custom format at all.
+        arg == "-z"
+            || arg == "--format"
+            || arg.starts_with("--format=")
+            || arg.starts_with("--pretty=format:")
+            || arg.starts_with("--pretty=tformat:")
+            || (arg == "--pretty"
+                && args.get(idx + 1).is_some_and(|next| {
+                    next.starts_with("format:") || next.starts_with("tformat:")
+                }))
+    })
 }
 
 fn build_status_command(args: &[String], global_args: &[String]) -> Command {
@@ -1784,6 +1807,27 @@ fn run_log(
 
     let timer = tracking::TimedExecution::start();
 
+    if log_args_request_machine_output(args) {
+        let mut cmd = git_cmd(global_args);
+        cmd.arg("log");
+        for arg in args {
+            cmd.arg(arg);
+        }
+
+        let result = exec_capture(&mut cmd).context("Failed to run git log")?;
+        if !result.success() {
+            eprintln!("{}", result.stderr);
+            return Ok(result.exit_code);
+        }
+
+        print!("{}", result.stdout);
+
+        let tracked = with_args("git log", &display_args(args));
+        timer.track_passthrough(&tracked, &tracking::passthrough_label(&tracked));
+
+        return Ok(0);
+    }
+
     let mut cmd = git_cmd(global_args);
     cmd.arg("log");
 
@@ -2373,14 +2417,14 @@ fn filter_status_with_args(output: &str) -> String {
 /// does. Printing either verbatim is wrong in one of the two cases: the joined
 /// form glues its last entry to whatever prints next, so
 /// `rtk git status -s | wc -l` undercounts by one — reporting `0`, i.e.
-/// "clean", on a tree with a single change.
+/// "clean", on a tree with a single change. (`--porcelain` and `-z` never
+/// reach this path: `status_args_request_machine_output` passes them
+/// through raw above.)
 ///
 /// Empty output is left empty: `-s` on a clean tree prints nothing at all,
-/// and a lone newline there would be a different fidelity bug. So is
-/// NUL-terminated output: `-z` ends its last record with NUL, and a newline
-/// after it is a stray byte for `xargs -0`.
+/// and a lone newline there would be a different fidelity bug.
 fn with_trailing_newline(output: &str) -> String {
-    if output.is_empty() || output.ends_with('\n') || output.ends_with('\0') {
+    if output.is_empty() || output.ends_with('\n') {
         output.to_string()
     } else {
         format!("{}\n", output)
@@ -2390,6 +2434,30 @@ fn with_trailing_newline(output: &str) -> String {
 fn run_status(args: &[String], verbose: u8, global_args: &[String]) -> Result<i32> {
     let timer = tracking::TimedExecution::start();
     let tracked = with_args("git status", &display_args(args));
+
+    if status_args_request_machine_output(args) {
+        let mut cmd = git_cmd(global_args);
+        cmd.arg("status");
+        cmd.args(args);
+        let result = exec_capture(&mut cmd).context("Failed to run git status")?;
+
+        if !result.success() {
+            if !result.stderr.trim().is_empty() {
+                eprint!("{}", result.stderr);
+            }
+            timer.track_passthrough(&tracked, &tracking::passthrough_label(&tracked));
+            return Ok(result.exit_code);
+        }
+
+        if verbose > 0 || !result.stderr.is_empty() {
+            eprint!("{}", result.stderr);
+        }
+        print!("{}", result.stdout);
+
+        timer.track_passthrough(&tracked, &tracking::passthrough_label(&tracked));
+
+        return Ok(0);
+    }
 
     // Keep a narrow compact path for no-arg status and branch/short-only flags.
     // More complex explicit args still use the existing minimal-filter path.
@@ -3781,19 +3849,26 @@ mod tests {
     }
 
     #[test]
-    fn test_stash_help_passthrough_keeps_the_subcommand() {
+    fn test_stash_operand_rejoins_the_user_region_before_restoring_double_dash() {
         let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        // `run` splits the restored stash region; the help passthrough needs
-        // the subcommand back in front, in order.
-        let (subcommand, rest) = split_stash_region(&a(&["list", "-h"]));
-        let user = GitCommand::Stash { subcommand }.user_args(&rest);
-        assert_eq!(user, a(&["list", "-h"]));
-        assert!(requests_help(&user));
-        // `rtk git stash -- -h`: after `--`, `-h` is an operand, not help.
-        let (subcommand, rest) = split_stash_region(&a(&["--", "-h"]));
-        let user = GitCommand::Stash { subcommand }.user_args(&rest);
-        assert_eq!(user, a(&["--", "-h"]));
-        assert!(!requests_help(&user), "`-- -h` is an operand, not help");
+        // `rtk git stash -- -h`: clap put `-h` in `subcommand`, args is empty.
+        let cmd = GitCommand::Stash {
+            subcommand: Some("-h".to_string()),
+        };
+        let raw = a(&["rtk", "git", "stash", "--", "-h"]);
+        let restored = args_utils::restore_double_dash_with_raw(&cmd.user_args(&[]), &raw);
+        assert_eq!(restored, a(&["--", "-h"]));
+        assert!(!requests_help(&restored), "`-- -h` is an operand, not help");
+        // Without the operand the region is one short and the `--` is lost.
+        assert_eq!(
+            args_utils::restore_double_dash_with_raw(&[], &raw),
+            a(&["-h"])
+        );
+        // `rtk git stash list -h` still asks for usage.
+        let cmd = GitCommand::Stash {
+            subcommand: Some("list".to_string()),
+        };
+        assert!(requests_help(&cmd.user_args(&a(&["-h"]))));
     }
 
     #[test]
@@ -3898,6 +3973,48 @@ mod tests {
     }
 
     #[test]
+    fn test_git_status_machine_output_args_passthrough() {
+        assert!(status_args_request_machine_output(&[
+            "--porcelain".to_string()
+        ]));
+        assert!(status_args_request_machine_output(&[
+            "--porcelain=v2".to_string()
+        ]));
+        assert!(status_args_request_machine_output(&["-z".to_string()]));
+        assert!(!status_args_request_machine_output(
+            &["--short".to_string()]
+        ));
+    }
+
+    #[test]
+    fn test_git_log_machine_output_args_passthrough() {
+        assert!(log_args_request_machine_output(
+            &["--format=%H".to_string()]
+        ));
+        assert!(log_args_request_machine_output(&[
+            "--pretty=format:%H".to_string()
+        ]));
+        assert!(log_args_request_machine_output(&[
+            "--format".to_string(),
+            "%H".to_string()
+        ]));
+        assert!(!log_args_request_machine_output(&["--oneline".to_string()]));
+    }
+
+    #[test]
+    fn test_git_log_z_is_machine_output_without_format_flag() {
+        // `git log -z --name-only` is machine output with no custom format at all.
+        // Before this, -z fell to the compact path, which injects its own
+        // --pretty=format:<MARKER>, -10 and --no-merges and then filters —
+        // exactly the corruption the machine-output guard exists to prevent.
+        assert!(log_args_request_machine_output(&["-z".to_string()]));
+        assert!(log_args_request_machine_output(&[
+            "-z".to_string(),
+            "--name-only".to_string()
+        ]));
+    }
+
+    #[test]
     fn test_build_status_command_default_compact() {
         let cmd = build_status_command(&[], &[]);
         let args: Vec<_> = cmd.get_args().collect();
@@ -3936,20 +4053,10 @@ mod tests {
     }
 
     #[test]
-    fn with_trailing_newline_leaves_nul_terminated_records_alone() {
-        // `git status -z` ends its last record with NUL, not a newline. A `\n`
-        // after it is a stray byte `xargs -0`/`read -d ''` consumers would see.
-        let raw = " M f.txt\0?? new.txt\0";
-        assert_eq!(
-            with_trailing_newline(never_worse(raw, &filter_status_with_args(raw))),
-            raw
-        );
-    }
-
-    #[test]
     fn filtered_status_line_count_matches_git() {
         // The regression this guards: `rtk git status -s | wc -l` reported 0
-        // on a one-file dirty tree, i.e. a false "clean".
+        // on a one-file dirty tree, i.e. a false "clean". (`--porcelain` is
+        // machine-output passthrough and never reached this path.)
         let raw = "?? handoff/\n";
         let filtered = with_trailing_newline(&filter_status_with_args(raw));
         // `wc -l` counts newlines, not `str::lines()` items.
