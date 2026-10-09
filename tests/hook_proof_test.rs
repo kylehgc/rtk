@@ -17,14 +17,16 @@
 //! found and the verdict is always `Default`.
 
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+
+mod common;
 
 /// Run `rtk hook claude` with `stdin` as input, isolated from real permission
 /// config: fresh `HOME`/`USERPROFILE`, cwd outside any git repo.
 fn run_claude_hook(stdin: &str) -> String {
     let home = tempfile::tempdir().expect("create isolated home tempdir");
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rtk"))
+    let mut child = common::rtk_command()
         .args(["hook", "claude"])
         .current_dir(home.path())
         .env("HOME", home.path())

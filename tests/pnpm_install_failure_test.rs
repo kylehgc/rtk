@@ -1,10 +1,11 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+
+mod common;
 
 fn write_fake_pnpm(dir: &Path) -> PathBuf {
     #[cfg(windows)]
@@ -62,7 +63,7 @@ fn pnpm_install_failure_preserves_stdout_error_output() {
     let temp = tempfile::tempdir().expect("tempdir");
     let _fake = write_fake_pnpm(temp.path());
 
-    let output = Command::new(env!("CARGO_BIN_EXE_rtk"))
+    let output = common::rtk_command()
         .args(["pnpm", "install"])
         .env("PATH", path_with_front(temp.path()))
         .output()

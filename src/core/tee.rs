@@ -2,7 +2,7 @@
 
 use crate::core::config::Config;
 pub(crate) use crate::core::retriever::MIN_FAILURE_BYTES as MIN_TEE_SIZE;
-use crate::core::retriever::{self, RecoveryMode, RetrieverConfig, Stored, MIN_FAILURE_BYTES};
+use crate::core::retriever::{self, MIN_FAILURE_BYTES, RecoveryMode, RetrieverConfig, Stored};
 
 fn active() -> Option<(RecoveryMode, RetrieverConfig)> {
     if retriever::recovery_disabled_by_env() {
@@ -109,16 +109,18 @@ pub fn force_tee_tail_hint(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::user_env;
 
     #[test]
     fn test_disabled_env_emits_nothing() {
-        let _guard = crate::core::utils::TEST_ENV_LOCK.lock().unwrap();
-        std::env::set_var("RTK_RECALL", "0");
         let big = "x".repeat(1000);
-        let hint = tee_and_hint(&big, "cmd", 1);
-        let forced = force_tee_hint(&big, "cmd");
-        let tail = force_tee_tail_hint(&big, "cmd", 5);
-        std::env::remove_var("RTK_RECALL");
+        let (hint, forced, tail) = user_env::with_vars(&[("RTK_RECALL", Some("0"))], || {
+            (
+                tee_and_hint(&big, "cmd", 1),
+                force_tee_hint(&big, "cmd"),
+                force_tee_tail_hint(&big, "cmd", 5),
+            )
+        });
         assert!(hint.is_none(), "disabled must never emit tokens");
         assert!(forced.is_none());
         assert!(tail.is_none());

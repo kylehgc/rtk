@@ -4,7 +4,9 @@
 #![cfg(windows)]
 use std::fs;
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Output;
+
+mod common;
 
 fn fake_cmd_tool(dir: &Path, name: &str, body: &str) {
     fs::write(
@@ -20,7 +22,7 @@ fn rtk_with(dir: &Path, args: &[&str]) -> Output {
         dir.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    Command::new(env!("CARGO_BIN_EXE_rtk"))
+    common::rtk_command()
         .args(args)
         .env("PATH", path)
         .env("RTK_DB_PATH", dir.join("rtk-test.db"))

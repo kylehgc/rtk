@@ -30,6 +30,8 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+mod common;
+
 const FIXTURE_CARGO_TOML: &str = r#"[package]
 name = "rtkfixture"
 version = "0.1.0"
@@ -87,7 +89,7 @@ fn cargo_test_preserves_compiler_warnings_on_passing_run() {
     let dir = tempfile::tempdir().expect("create fixture tempdir");
     write_fixture(dir.path());
 
-    let out = Command::new(env!("CARGO_BIN_EXE_rtk"))
+    let out = common::rtk_command()
         .args(["cargo", "test"])
         .current_dir(dir.path())
         // CI exports CARGO_TERM_COLOR=always (ci.yml, global env), and the nested
@@ -156,7 +158,7 @@ fn piped_cargo_test_filter_does_not_restate_captured_warnings() {
         "fixture must actually warn for this test to mean anything, got raw:\n{raw}"
     );
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rtk"))
+    let mut child = common::rtk_command()
         .args(["pipe", "--filter", "cargo-test"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

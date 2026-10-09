@@ -1,0 +1,10 @@
+# Fork Infrastructure (see CONTEXT.md). Upstream has no file at this path.
+#
+# Test threads parse argv through the full clap command graph, and in a Windows
+# debug build the derived parser's frames outgrow libtest's 2 MiB default thread
+# stack once the fork's subcommands sit on top of upstream's (STATUS_STACK_OVERFLOW
+# in `tests::*` parse tests, first seen in the 2026-10-09 sync). build.rs already
+# reserves 8 MiB for the binary's main thread, where the real CLI parses; this
+# gives test threads the same.
+[env]
+RUST_MIN_STACK = "8388608"

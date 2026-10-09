@@ -37,7 +37,6 @@ EXCLUDE_SCOPES="skills|review|sync|context|docs|ci|cicd|test|fork"
 # test confirms healing.
 HEALED_SHAS=(
   673ad19 # 2026-08-05 upstream hook_cmd.rs matches run_in_terminal itself (#88 audit)
-  7db14a3 # 2026-08-05 upstream merged its PR #1350, byte-identical both sides (#88 audit)
   e1e37fd # 2026-08-05 superseded by upstream's analyze_pipeline redesign (#88 audit)
   e95207d # 2026-08-05 superseded by upstream's analyze_pipeline redesign (#88 audit)
   bfce39e # 2026-08-12 subsumed by upstream PR #2997 review commit (claudedocs/sync-conflict-2026-08-12.md)
@@ -63,6 +62,9 @@ HEALED_SHAS=(
   8ca2e0e # 2026-09-07 upstream merged PR #3268 (9512e1a); this is its d4239ec with an adjacency resolution, so the patch-id differs. 091e4a5 heals by patch-id (claudedocs/sync-conflict-2026-09-07-b.md)
   371e058 # 2026-09-11 the Allow-assert arm it gated is gone: upstream d6ce8f7 decision::suppress_identity defers identity rewrites; its ASCII-IFS whitespace rule survives in strip_token, 505e355 (claudedocs/sync-conflict-2026-09-11.md)
   31fceff # 2026-09-11 Ask-assert arm and no-op renderer guards superseded by upstream d6ce8f7 decision::suppress_identity (claudedocs/sync-conflict-2026-09-11.md)
+  653fb56 # 2026-10-09 superseded by upstream's --head-lines window: `head -N` rewrites there, --max-lines stays smart_truncate (claudedocs/sync-conflict-2026-10-09.md)
+  00d8ee4 # 2026-10-09 superseded by upstream PR #3681 arg_tokenizer, which parses rg's -r as --replace; upstream closed #3162 for it (claudedocs/sync-conflict-2026-10-09.md)
+  d43cef5 # 2026-10-09 amendment to 00d8ee4, removed with it (claudedocs/sync-conflict-2026-10-09.md)
 )
 
 # ponytail: patch-id scan bounded to upstream commits since UPSTREAM_SINCE.

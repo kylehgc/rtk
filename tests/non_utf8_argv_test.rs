@@ -8,6 +8,8 @@ use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
 use std::process::Command;
 
+mod common;
+
 /// Leading bytes of a double-encoded UTF-8 sequence: invalid UTF-8 on its own, and
 /// the kind of fragment you grep for when hunting mojibake. From the issue repro.
 const INVALID_PATTERN: &[u8] = b"\xc3\xa2\xe2\x80";
@@ -20,7 +22,7 @@ fn os(bytes: &[u8]) -> OsString {
 }
 
 fn rtk(args: &[OsString]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_rtk"))
+    common::rtk_command()
         .args(args)
         // Same locale as the native grep we compare against. BSD grep is byte-oriented
         // under C but rejects invalid UTF-8 patterns with "illegal byte sequence" under

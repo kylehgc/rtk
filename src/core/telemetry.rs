@@ -1,8 +1,8 @@
 //! Optional usage ping so we know which commands people run most.
 
-use super::constants::RTK_DATA_DIR;
 use crate::core::config;
 use crate::core::tracking;
+use crate::core::user_dirs;
 use crate::hooks::constants::CLAUDE_DIR;
 use crate::hooks::init::resolve_claude_dir;
 use sha2::{Digest, Sha256};
@@ -60,14 +60,12 @@ pub fn maybe_ping() {
 
     // Check last ping time
     let marker = telemetry_marker_path();
-    if let Ok(metadata) = std::fs::metadata(&marker) {
-        if let Ok(modified) = metadata.modified() {
-            if let Ok(elapsed) = modified.elapsed() {
-                if elapsed.as_secs() < PING_INTERVAL_SECS {
-                    return;
-                }
-            }
-        }
+    if let Ok(metadata) = std::fs::metadata(&marker)
+        && let Ok(modified) = metadata.modified()
+        && let Ok(elapsed) = modified.elapsed()
+        && elapsed.as_secs() < PING_INTERVAL_SECS
+    {
+        return;
     }
 
     // Touch marker file immediately (before sending) to avoid double-ping
@@ -222,10 +220,7 @@ fn random_salt() -> String {
 }
 
 pub fn salt_file_path() -> PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("rtk")
-        .join(".device_salt")
+    user_dirs::data_under("/tmp").join(".device_salt")
 }
 
 fn get_stats(tracker: &tracking::Tracker) -> (i64, Vec<String>, Option<f64>, i64, i64) {
@@ -451,8 +446,8 @@ fn build_meta_usage(tracker: &tracking::Tracker) -> serde_json::Value {
 
 /// Check if user has a config.toml file.
 fn detect_has_config() -> bool {
-    dirs::config_dir()
-        .map(|d| d.join("rtk/config.toml").exists())
+    user_dirs::config()
+        .map(|d| d.join(crate::core::constants::CONFIG_TOML).exists())
         .unwrap_or(false)
 }
 
@@ -465,7 +460,7 @@ fn count_exclude_commands() -> usize {
 
 /// Detect which AI agent hook is installed.
 fn detect_hook_type() -> String {
-    let home = match dirs::home_dir() {
+    let home = match user_dirs::home() {
         Some(h) => h,
         None => return "unknown".to_string(),
     };
@@ -489,7 +484,7 @@ fn detect_hook_type() -> String {
     }
 
     // Check project-level hooks (Claude script + project-scoped Copilot config)
-    if let Ok(cwd) = std::env::current_dir() {
+    if let Some(cwd) = user_dirs::working_dir() {
         if cwd.join(".claude/hooks/rtk-rewrite.sh").exists() {
             return "claude".to_string();
         }
@@ -506,23 +501,23 @@ fn count_custom_toml_filters() -> usize {
     let mut count = 0;
 
     // Project-local: .rtk/filters/*.toml
-    if let Ok(cwd) = std::env::current_dir() {
-        if let Ok(entries) = std::fs::read_dir(cwd.join(".rtk/filters")) {
-            count += entries
-                .filter_map(|e| e.ok())
-                .filter(|e| e.path().extension().is_some_and(|ext| ext == "toml"))
-                .count();
-        }
+    if let Some(cwd) = user_dirs::working_dir()
+        && let Ok(entries) = std::fs::read_dir(cwd.join(".rtk/filters"))
+    {
+        count += entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "toml"))
+            .count();
     }
 
     // Global: ~/.config/rtk/filters/*.toml
-    if let Some(config_dir) = dirs::config_dir() {
-        if let Ok(entries) = std::fs::read_dir(config_dir.join("rtk/filters")) {
-            count += entries
-                .filter_map(|e| e.ok())
-                .filter(|e| e.path().extension().is_some_and(|ext| ext == "toml"))
-                .count();
-        }
+    if let Some(rtk_dir) = user_dirs::config()
+        && let Ok(entries) = std::fs::read_dir(rtk_dir.join("filters"))
+    {
+        count += entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "toml"))
+            .count();
     }
 
     count
@@ -555,9 +550,7 @@ fn install_method_from_path(path: &str) -> &'static str {
 }
 
 pub fn telemetry_marker_path() -> PathBuf {
-    let data_dir = dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join(RTK_DATA_DIR);
+    let data_dir = user_dirs::data_under("/tmp");
     let _ = crate::core::utils::create_private_dir(&data_dir);
     data_dir.join(".telemetry_last_ping")
 }
@@ -766,9 +759,11 @@ mod tests {
             stats.avg_savings_per_command
         );
         assert!(
-            ["claude", "gemini", "codex", "cursor", "copilot", "vibe", "none", "unknown"]
-                .iter()
-                .any(|&h| stats.hook_type.starts_with(h)),
+            [
+                "claude", "gemini", "codex", "cursor", "copilot", "vibe", "none", "unknown"
+            ]
+            .iter()
+            .any(|&h| stats.hook_type.starts_with(h)),
             "Unexpected hook type: {}",
             stats.hook_type
         );
@@ -778,8 +773,10 @@ mod tests {
     fn test_detect_hook_type_returns_known() {
         let ht = detect_hook_type();
         assert!(
-            ["claude", "gemini", "codex", "cursor", "copilot", "vibe", "none", "unknown"]
-                .contains(&ht.as_str()),
+            [
+                "claude", "gemini", "codex", "cursor", "copilot", "vibe", "none", "unknown"
+            ]
+            .contains(&ht.as_str()),
             "Unexpected hook type: {}",
             ht
         );
