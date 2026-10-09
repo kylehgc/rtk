@@ -10,13 +10,11 @@
 #   reduction  upstream passes output through unfiltered, the fork filters it
 #
 # test<TAB>class<TAB>claim
-machine_readable_git_output_is_byte_identical_to_native	fidelity	Upstream filters `git --porcelain` output that was never meant to be read by a human; the fork passes machine output through byte-for-byte.
+machine_readable_git_output_is_byte_identical_to_native	fidelity	Upstream drops the final newline from `git status --porcelain` output (v1 and v2), so `| wc -l` undercounts and `while read` loops lose the last entry; the fork's machine-readable git output is byte-identical to git's.
 non_utf8_pattern_does_not_abort	fidelity	Upstream aborts (SIGABRT, exit 134) on any argument containing non-UTF-8 bytes, before the wrapped command runs; the fork executes it.
 non_utf8_pattern_forwards_original_bytes	fidelity	The wrapped tool receives the exact bytes the user typed, not a lossy copy.
 non_utf8_arg_to_missing_command_exits_cleanly	fidelity	A non-UTF-8 argument to a command that does not exist exits cleanly instead of aborting.
 pnpm_install_failure_preserves_stdout_error_output	fidelity	Upstream discards the error output of a failed `pnpm install`; the fork preserves it.
-claude_hook_rewrites_current_input_key_shape	fidelity	Upstream's Claude hook only reads the legacy `tool_input` key and silently ignores the current `input`-shaped PreToolUse payload; the fork rewrites it and preserves sibling fields.
-claude_hook_emits_ask_decision_for_default_verdict	fidelity	Upstream's Claude hook omits `permissionDecision` for an unconfigured (Default-verdict) rewrite, relying on an absent key; the fork explicitly emits `"ask"`.
 cargo_test_preserves_compiler_warnings_on_passing_run	fidelity	Upstream drops every compiler warning on a passing `cargo test` run; the fork preserves the full warning detail and annotates the summary with a compiler-warning count.
 piped_cargo_test_filter_does_not_restate_captured_warnings	reduction	Measures: on `cargo test` output with a warning but no test-result line, the fork's raw-tail fallback excludes lines its captured-warnings section already printed — the warning's detail line appears exactly once (not restated) and the filtered output is smaller than raw cargo output; upstream has no captured-warnings section to protect.
 
@@ -40,3 +38,12 @@ piped_cargo_test_filter_does_not_restate_captured_warnings	reduction	Measures: o
 #   (it closed #3162 for #3681). The fork's strip and tests/rg_replace_fidelity_test.rs are gone.
 #   rg_short_r_cluster_does_not_trigger_ripgrep_replace
 #   rg_dash_prefixed_flag_value_survives_r_strip
+# Withdrawn 2026-10-09, with the code it proved: omitting `permissionDecision` on a Default or
+#   Ask rewrite is upstream's design, not a gap. Claude Code then prompts and can remember the
+#   answer (KuSh on upstream issue 3018); upstream closed PR 3031, the source of e93cde8, as no
+#   longer applicable. The fork now omits it too.
+#   claude_hook_emits_ask_decision_for_default_verdict
+# Withdrawn 2026-10-09, with the code it proved: no Claude Code hook event sends an `input`-keyed
+#   payload. KuSh declined the fallback on upstream PR 2535 as unreachable and as widening the
+#   trigger surface. tests/hook_proof_test.rs is gone with both of its claims.
+#   claude_hook_rewrites_current_input_key_shape
